@@ -1,0 +1,62 @@
+[project]
+name = "quantilica-core"
+version = "0.1.0"
+description = "Common foundation utilities for Quantilica data projects"
+readme = "README.md"
+authors = [
+    { name = "Komesu, D.K.", email = "daniel@dkko.me" },
+]
+license = { file = "LICENSE" }
+requires-python = ">=3.12"
+keywords = [
+    "data",
+    "open-data",
+    "brazil",
+    "quantilica",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+dependencies = [
+    "httpx>=0.28.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/Quantilica/quantilica-core"
+Repository = "https://github.com/Quantilica/quantilica-core"
+Issues = "https://github.com/Quantilica/quantilica-core/issues"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.9.0",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+exclude = [
+    ".uv-cache",
+    ".venv",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["UP047"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-p", "no:cacheprovider"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
