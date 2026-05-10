@@ -1,109 +1,75 @@
-# quantilica-core 📦
+# quantilica-core: Fundação de infraestrutura para projetos Quantilica
 
-**Foundation utilities for Quantilica data projects.**
+![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square) ![Python](https://img.shields.io/badge/python-3.12+-blue.svg?style=flat-square)
 
-`quantilica-core` provides a domain-neutral foundation for data clients, ETL pipelines, and metadata services. It centralizes essential infrastructure like resilient networking, atomic storage, and data provenance, allowing specific projects to focus exclusively on their data domains.
+Biblioteca de utilitários domain-neutral que serve como base para todos os coletores e pipelines Quantilica. Centraliza rede resiliente, armazenamento atômico, proveniência de dados e logging estruturado — permitindo que cada pacote de domínio foque exclusivamente na lógica de sua fonte de dados.
 
----
-
-## ✨ Key Features
-
--   **Resilient Networking**: Sync and Async HTTP clients with built-in exponential backoff and jitter.
--   **Data Provenance**: Automatic generation of SHA-256 manifests for every downloaded artifact.
--   **Atomic Storage**: Local filesystem abstraction with object-style keys and atomic write guarantees.
--   **Unified Metadata**: Standard models for Sources, Datasets, Variables, and Dimensions to enable global indexing.
--   **Structured Logging**: Context-aware logging with built-in step tracking and performance timing.
-
----
-
-## 🚀 Installation
-
-`quantilica-core` is published from this GitHub repository (not on PyPI). Add
-it to your project as a git dependency:
-
-```bash
-uv add "quantilica-core @ git+https://github.com/Quantilica/quantilica-core.git"
-```
-
-Or with pip:
+## Instalação
 
 ```bash
 pip install "quantilica-core @ git+https://github.com/Quantilica/quantilica-core.git"
 ```
 
----
+Com uv:
 
-## 🛠️ Core Modules
-
--   **`http`**: `HttpClient` and `AsyncHttpClient` based on `httpx`.
--   **`retry`**: Advanced retry logic for network and transient failures.
--   **`storage`**: `LocalStorage` for managing raw and processed data artifacts.
--   **`manifests`**: `DownloadManifest` and `ExecutionManifest` for full traceability.
--   **`metadata`**: `MetadataCatalog` models for interoperability between datasets.
--   **`logging`**: Structured logging via `get_logger` and `log_step`.
--   **`exceptions`**: Standard hierarchy (`FetchError`, `ParseError`, `StorageError`).
-
----
-
-## 💡 Design Principles
-
-1.  **Domain Neutrality**: The core never knows about specific data sources (IBGE, DATASUS, etc.).
-2.  **Lightweight**: Minimal core dependencies; heavy integrations are optional extras.
-3.  **Stability**: High test coverage for all infrastructure components.
-4.  **Developer Experience**: Clean, type-hinted APIs and consistent error handling.
-
----
-
-## 📖 Usage Examples
-
-### Resilient Async Fetching
-```python
-import asyncio
-from quantilica_core.http import AsyncHttpClient
-
-async def main():
-    client = AsyncHttpClient(attempts=3)
-    data = await client.get_json("https://api.example.com/data")
-    print(data)
-
-asyncio.run(main())
+```bash
+uv add "quantilica-core @ git+https://github.com/Quantilica/quantilica-core.git"
 ```
 
-### Storage with Provenance
+## Uso Rápido
+
 ```python
+from quantilica_core.http import HttpClient
 from quantilica_core.storage import LocalStorage
 from quantilica_core.manifests import DownloadManifest
 
-storage = LocalStorage("data/raw")
-# Atomic write
-stat = storage.write_bytes("source/file.csv", b"content...")
+# Cliente HTTP com retry automático
+client = HttpClient(attempts=3)
+response = client.get("https://api.ibge.gov.br/...")
 
-# Record provenance
+# Escrita atômica em disco
+storage = LocalStorage("dados/raw")
+stat = storage.write_bytes("sidra/tabela.csv", response.content)
+
+# Registro de proveniência (SHA-256)
 manifest = DownloadManifest.from_file(
-    source_id="my-source",
-    dataset_id="my-dataset",
-    url="https://source.com/file.csv",
+    source_id="ibge",
+    dataset_id="sidra-1234",
+    url="https://...",
     file_path=stat.path,
-    producer="my-fetcher"
+    producer="sidra-fetcher",
 )
 manifest.write_json(stat.path.with_suffix(".manifest.json"))
 ```
 
-### Metadata Cataloging
-```python
-from quantilica_core.metadata import MetadataCatalog, Source, Dataset
+## Módulos
 
-catalog = MetadataCatalog(
-    sources=[Source(id="ibge", name="IBGE")],
-    datasets=[Dataset(id="ipca", source_id="ibge", name="IPCA")]
-)
-catalog.validate_references()
-print(catalog.to_json())
+| Módulo | Descrição |
+| :--- | :--- |
+| `http` | `HttpClient` e `AsyncHttpClient` com backoff exponencial e jitter |
+| `retry` | Lógica de retry configurável para falhas de rede e erros transientes |
+| `storage` | `LocalStorage` para gerenciar artefatos brutos e processados atomicamente |
+| `manifests` | `DownloadManifest` e `ExecutionManifest` para rastreabilidade completa |
+| `metadata` | Modelos `MetadataCatalog`, `Source`, `Dataset` para interoperabilidade |
+| `logging` | Logging estruturado via `get_logger` e `log_step` |
+| `exceptions` | Hierarquia padrão: `FetchError`, `ParseError`, `StorageError` |
+
+## Princípios de Design
+
+1. **Neutralidade de domínio** — o core nunca sabe o que é IBGE, DATASUS ou INMET.
+2. **Leveza** — dependências mínimas no núcleo; integrações pesadas são extras opcionais.
+3. **Estabilidade** — alta cobertura de testes em todos os componentes de infraestrutura.
+4. **DX** — APIs tipadas e tratamento de erros consistente em toda a organização.
+
+## Desenvolvimento
+
+```bash
+git clone https://github.com/Quantilica/quantilica-core.git
+cd quantilica-core
+uv sync --dev
+uv run pytest
 ```
 
----
+## Licença
 
-## ⚖️ License
-
-Copyright (c) 2026 Komesu, D.K. (Quantilica)  
-Licensed under the [MIT License](LICENSE).
+MIT — veja [LICENSE](LICENSE).
