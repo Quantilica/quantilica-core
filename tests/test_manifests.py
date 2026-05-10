@@ -28,6 +28,25 @@ def test_download_manifest_from_content():
     assert manifest.metadata["format"] == "json"
 
 
+def test_download_manifest_from_digest():
+    manifest = DownloadManifest.from_digest(
+        source_id="tesouro-direto",
+        dataset_id="vendas",
+        url="https://example.test/data.csv",
+        sha256="deadbeef",
+        size_bytes=1024,
+        producer="tddata",
+        path="/tmp/x.csv",
+        metadata={"chunked": True},
+    )
+
+    assert manifest.sha256 == "deadbeef"
+    assert manifest.size_bytes == 1024
+    assert manifest.path == "/tmp/x.csv"
+    assert manifest.fetched_at.endswith("Z")
+    assert manifest.metadata == {"chunked": True}
+
+
 def test_download_manifest_from_file(tmp_path):
     file_path = tmp_path / "data.bin"
     file_path.write_bytes(b"abc")

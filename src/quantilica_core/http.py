@@ -3,22 +3,50 @@
 from __future__ import annotations
 
 import contextlib
+import email.utils
+import hashlib
 import logging
+import os
+import tempfile
 import time
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Callable, Mapping
 from pathlib import Path
 from typing import Any
 
 import httpx
 
-from .exceptions import FetchError
-from .files import write_bytes_atomic
-from .logging import bind_context, get_logger
+from .exceptions import FetchError, StorageError
+from .files import ensure_parent, write_bytes_atomic
+from .logging import bind_context, get_logger, log_step
+from .manifests import DownloadManifest
 from .retry import async_retry_call, retry_call
+
+ProgressCallback = Callable[[int, int], None]
+"""Callback invoked as ``(downloaded_bytes, total_bytes)`` during a stream.
+
+``total_bytes`` is ``0`` when the remote does not advertise ``Content-Length``.
+"""
+
+DEFAULT_STREAM_CHUNK_SIZE = 64 * 1024
 
 DEFAULT_USER_AGENT = "quantilica-core"
 DEFAULT_TIMEOUT = 60.0
 RETRY_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+
+# Realistic browser headers for sites that reject non-browser User-Agents
+# (e.g. some Brazilian government portals served behind WAFs).
+BROWSER_HEADERS: dict[str, str] = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,*/*;q=0.8"
+    ),
+    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+}
 
 
 class HttpStatusError(FetchError):
@@ -189,6 +217,92 @@ class HttpClient:
         content = self.get_bytes(url, params=params, headers=headers)
         return write_bytes_atomic(target_path, content)
 
+    def download_with_manifest(
+        self,
+        url: str,
+        target_path: str | Path,
+        *,
+        source_id: str,
+        dataset_id: str,
+        producer: str,
+        params: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
+        force: bool = False,
+        check_size: bool = True,
+        progress: ProgressCallback | None = None,
+        chunk_size: int = DEFAULT_STREAM_CHUNK_SIZE,
+    ) -> Path:
+        """Stream a URL to disk with freshness check, atomic write, and manifest.
+
+        If the file exists and is up to date according to ``Last-Modified``
+        (and optionally ``Content-Length``), it is not downloaded.
+
+        ``progress`` is invoked as ``(downloaded_bytes, total_bytes)`` after
+        each chunk is written. ``total_bytes`` is ``0`` when the remote does
+        not advertise ``Content-Length``.
+        """
+        target = Path(target_path)
+        with log_step(
+            self.logger, "download-with-manifest", url=url, target=target.name
+        ):
+            try:
+                head = self.head(url, params=params, headers=headers)
+                if not force and target.exists():
+                    if not _is_remote_more_recent(
+                        head, target, check_size=check_size
+                    ):
+                        self.logger.debug(f"File is up to date: {target.name}")
+                        return target
+            except FetchError:
+                if not force and target.exists():
+                    raise
+
+            with self.stream(
+                "GET", url, params=params, headers=headers
+            ) as response:
+                total = int(response.headers.get("Content-Length", 0) or 0)
+                last_modified = response.headers.get("Last-Modified")
+                final_url = str(response.url)
+
+                fd, temp_path = _open_atomic_temp(target)
+                downloaded = 0
+                digest = hashlib.sha256()
+                try:
+                    with os.fdopen(fd, "wb") as stream:
+                        for chunk in response.iter_bytes(chunk_size=chunk_size):
+                            if not chunk:
+                                continue
+                            stream.write(chunk)
+                            digest.update(chunk)
+                            downloaded += len(chunk)
+                            if progress is not None:
+                                progress(downloaded, total)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    temp_path.replace(target)
+                except OSError as exc:
+                    raise StorageError(
+                        f"Could not stream download to {target}"
+                    ) from exc
+                finally:
+                    if temp_path.exists():
+                        try:
+                            temp_path.unlink()
+                        except OSError:
+                            pass
+
+            _sync_mtime_from_last_modified(target, last_modified)
+            _write_manifest(
+                target,
+                source_id=source_id,
+                dataset_id=dataset_id,
+                url=final_url,
+                sha256=digest.hexdigest(),
+                size_bytes=downloaded,
+                producer=producer,
+            )
+            return target
+
     @contextlib.contextmanager
     def stream(
         self,
@@ -212,7 +326,8 @@ class HttpClient:
                 try:
                     response.raise_for_status()
                 except httpx.HTTPStatusError as exc:
-                    raise HttpStatusError(str(response.url), response.status_code) from exc
+                    url_str = str(response.url)
+                    raise HttpStatusError(url_str, response.status_code) from exc
                 yield response
 
 
@@ -363,6 +478,87 @@ class AsyncHttpClient:
         content = await self.get_bytes(url, params=params, headers=headers)
         return write_bytes_atomic(target_path, content)
 
+    async def download_with_manifest(
+        self,
+        url: str,
+        target_path: str | Path,
+        *,
+        source_id: str,
+        dataset_id: str,
+        producer: str,
+        params: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
+        force: bool = False,
+        check_size: bool = True,
+        progress: ProgressCallback | None = None,
+        chunk_size: int = DEFAULT_STREAM_CHUNK_SIZE,
+    ) -> Path:
+        """Stream a URL to disk asynchronously with freshness check and manifest.
+
+        See :meth:`HttpClient.download_with_manifest` for parameter semantics.
+        """
+        target = Path(target_path)
+        with log_step(
+            self.logger, "download-with-manifest-async", url=url, target=target.name
+        ):
+            try:
+                head = await self.head(url, params=params, headers=headers)
+                if not force and target.exists():
+                    if not _is_remote_more_recent(head, target, check_size=check_size):
+                        self.logger.debug(f"File is up to date: {target.name}")
+                        return target
+            except FetchError:
+                if not force and target.exists():
+                    raise
+
+            async with self.stream(
+                "GET", url, params=params, headers=headers
+            ) as response:
+                total = int(response.headers.get("Content-Length", 0) or 0)
+                last_modified = response.headers.get("Last-Modified")
+                final_url = str(response.url)
+
+                fd, temp_path = _open_atomic_temp(target)
+                downloaded = 0
+                digest = hashlib.sha256()
+                try:
+                    with os.fdopen(fd, "wb") as stream:
+                        async for chunk in response.aiter_bytes(
+                            chunk_size=chunk_size
+                        ):
+                            if not chunk:
+                                continue
+                            stream.write(chunk)
+                            digest.update(chunk)
+                            downloaded += len(chunk)
+                            if progress is not None:
+                                progress(downloaded, total)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    temp_path.replace(target)
+                except OSError as exc:
+                    raise StorageError(
+                        f"Could not stream download to {target}"
+                    ) from exc
+                finally:
+                    if temp_path.exists():
+                        try:
+                            temp_path.unlink()
+                        except OSError:
+                            pass
+
+            _sync_mtime_from_last_modified(target, last_modified)
+            _write_manifest(
+                target,
+                source_id=source_id,
+                dataset_id=dataset_id,
+                url=final_url,
+                sha256=digest.hexdigest(),
+                size_bytes=downloaded,
+                producer=producer,
+            )
+            return target
+
     @contextlib.asynccontextmanager
     async def stream(
         self,
@@ -386,5 +582,88 @@ class AsyncHttpClient:
                 try:
                     response.raise_for_status()
                 except httpx.HTTPStatusError as exc:
-                    raise HttpStatusError(str(response.url), response.status_code) from exc
+                    url_str = str(response.url)
+                    raise HttpStatusError(url_str, response.status_code) from exc
                 yield response
+
+
+def _open_atomic_temp(target: Path) -> tuple[int, Path]:
+    """Create a temp file alongside ``target`` for atomic write."""
+    ensure_parent(target)
+    fd, raw_temp_path = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        dir=target.parent,
+    )
+    return fd, Path(raw_temp_path)
+
+
+def _sync_mtime_from_last_modified(target: Path, header_value: str | None) -> None:
+    """Set ``target``'s mtime from an HTTP ``Last-Modified`` header."""
+    if not header_value:
+        return
+    try:
+        dt = email.utils.parsedate_to_datetime(header_value)
+        os.utime(target, (time.time(), dt.timestamp()))
+    except (ValueError, TypeError, OSError):
+        pass
+
+
+def _write_manifest(
+    target: Path,
+    *,
+    source_id: str,
+    dataset_id: str,
+    url: str,
+    sha256: str,
+    size_bytes: int,
+    producer: str | None,
+) -> None:
+    manifest = DownloadManifest.from_digest(
+        source_id=source_id,
+        dataset_id=dataset_id,
+        url=url,
+        sha256=sha256,
+        size_bytes=size_bytes,
+        path=str(target.absolute()),
+        producer=producer,
+    )
+    manifest_path = target.with_suffix(target.suffix + ".manifest.json")
+    manifest.write_json(manifest_path)
+
+
+def _is_remote_more_recent(
+    response: httpx.Response,
+    local_path: Path,
+    *,
+    check_size: bool = True,
+) -> bool:
+    """Check if the remote resource is more recent than the local file."""
+    if not local_path.exists():
+        return True
+
+    # 1. Check size if requested
+    if check_size:
+        content_length = response.headers.get("Content-Length")
+        if content_length:
+            try:
+                remote_size = int(content_length)
+                if local_path.stat().st_size != remote_size:
+                    return True
+            except (ValueError, TypeError):
+                pass
+
+    # 2. Check Last-Modified
+    last_modified = response.headers.get("Last-Modified")
+    if not last_modified:
+        # If we can't check modification date and size was OK (or not checked),
+        # we assume it's NOT more recent (up to date).
+        return False
+
+    try:
+        dt = email.utils.parsedate_to_datetime(last_modified)
+        remote_mtime = dt.timestamp()
+        # 1s buffer for precision
+        return local_path.stat().st_mtime < (remote_mtime - 1)
+    except (ValueError, TypeError, OSError):
+        return True

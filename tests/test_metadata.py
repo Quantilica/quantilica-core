@@ -14,6 +14,7 @@ from quantilica_core.metadata import (
     Source,
     Territory,
     Variable,
+    build_simple_catalog,
     validate_id,
 )
 
@@ -140,6 +141,42 @@ def test_metadata_catalog_rejects_unknown_source_reference():
 
     with pytest.raises(MetadataError):
         catalog.validate_references()
+
+
+def test_build_simple_catalog_returns_validated_catalog():
+    source = Source(id="tesouro-nacional", name="Tesouro Nacional")
+    dataset = Dataset(
+        id="rtn",
+        source_id="tesouro-nacional",
+        name="Resultado do Tesouro Nacional",
+    )
+    resources = [
+        Resource(id=f"rtn-{n}", dataset_id="rtn", name=f"file-{n}.xlsx")
+        for n in range(3)
+    ]
+
+    catalog = build_simple_catalog(source, dataset, resources)
+
+    assert catalog.sources == [source]
+    assert catalog.datasets == [dataset]
+    assert len(catalog.resources) == 3
+
+
+def test_build_simple_catalog_rejects_dataset_with_wrong_source():
+    source = Source(id="ibge", name="IBGE")
+    dataset = Dataset(id="rtn", source_id="tesouro-nacional", name="RTN")
+
+    with pytest.raises(MetadataError):
+        build_simple_catalog(source, dataset, [])
+
+
+def test_build_simple_catalog_rejects_resource_with_wrong_dataset():
+    source = Source(id="ibge", name="IBGE")
+    dataset = Dataset(id="sidra", source_id="ibge", name="SIDRA")
+    bad = Resource(id="r1", dataset_id="other", name="r1")
+
+    with pytest.raises(MetadataError):
+        build_simple_catalog(source, dataset, [bad])
 
 
 def test_metadata_catalog_rejects_unknown_series_variable_reference():

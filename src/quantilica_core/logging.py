@@ -37,6 +37,25 @@ def configure_logging(
     )
 
 
+def configure_cli_logging(
+    verbose: bool = False,
+    *,
+    stream: Any = sys.stderr,
+    force: bool = True,
+) -> None:
+    """Configure logging for a CLI entry point.
+
+    ``verbose=True`` selects ``DEBUG``, otherwise ``INFO``. ``force`` defaults
+    to ``True`` so CLIs re-invoked in the same interpreter (notebooks, tests)
+    reconfigure cleanly instead of silently inheriting previous handlers.
+    """
+    configure_logging(
+        level=logging.DEBUG if verbose else logging.INFO,
+        stream=stream,
+        force=force,
+    )
+
+
 def bind_context(message: str, **context: object) -> str:
     """Append structured context to a human-readable log message."""
     if not context:

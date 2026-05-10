@@ -57,6 +57,40 @@ class DownloadManifest:
         )
 
     @classmethod
+    def from_digest(
+        cls,
+        *,
+        source_id: str,
+        dataset_id: str,
+        url: str,
+        sha256: str,
+        size_bytes: int,
+        resource_id: str | None = None,
+        path: str | None = None,
+        producer: str | None = None,
+        producer_version: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> DownloadManifest:
+        """Build a download manifest from a precomputed digest and size.
+
+        Useful when the digest was computed incrementally during a streaming
+        download, so the file does not need to be re-read.
+        """
+        return cls(
+            source_id=source_id,
+            dataset_id=dataset_id,
+            resource_id=resource_id,
+            url=url,
+            path=path,
+            fetched_at=isoformat_utc(),
+            sha256=sha256,
+            size_bytes=size_bytes,
+            producer=producer,
+            producer_version=producer_version,
+            metadata=dict(metadata or {}),
+        )
+
+    @classmethod
     def from_file(
         cls,
         *,

@@ -1,8 +1,17 @@
+import asyncio
+import hashlib
+import json
+
 import httpx
 import pytest
 
 from quantilica_core.exceptions import FetchError
-from quantilica_core.http import HttpClient, HttpStatusError
+from quantilica_core.http import (
+    BROWSER_HEADERS,
+    AsyncHttpClient,
+    HttpClient,
+    HttpStatusError,
+)
 
 
 def test_http_client_get_json():
@@ -74,3 +83,148 @@ def test_http_client_invalid_json():
 
     with pytest.raises(FetchError):
         client.get_json("https://example.test/data")
+
+
+_DEFAULT_LAST_MODIFIED = "Wed, 21 Oct 2026 07:28:00 GMT"
+
+
+def _download_handler_factory(
+    payload: bytes,
+    *,
+    last_modified: str = _DEFAULT_LAST_MODIFIED,
+):
+    """Build a handler that answers HEAD with size + Last-Modified, GET with payload."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        headers = {
+            "Content-Length": str(len(payload)),
+            "Last-Modified": last_modified,
+        }
+        if request.method == "HEAD":
+            return httpx.Response(200, headers=headers)
+        return httpx.Response(200, content=payload, headers=headers)
+
+    return handler
+
+
+def test_download_with_manifest_streams_and_writes_manifest(tmp_path):
+    payload = b"x" * (200 * 1024)  # > 1 chunk at 64KB
+    handler = _download_handler_factory(payload)
+    client = HttpClient(attempts=1, transport=httpx.MockTransport(handler))
+
+    target = tmp_path / "data.bin"
+    out = client.download_with_manifest(
+        "https://example.test/data",
+        target,
+        source_id="src",
+        dataset_id="ds",
+        producer="test",
+    )
+
+    assert out == target
+    assert target.read_bytes() == payload
+
+    manifest_path = target.with_suffix(".bin.manifest.json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["sha256"] == hashlib.sha256(payload).hexdigest()
+    assert manifest["size_bytes"] == len(payload)
+    assert manifest["source_id"] == "src"
+
+
+def test_download_with_manifest_invokes_progress(tmp_path):
+    payload = b"y" * (150 * 1024)
+    handler = _download_handler_factory(payload)
+    client = HttpClient(attempts=1, transport=httpx.MockTransport(handler))
+
+    seen: list[tuple[int, int]] = []
+    client.download_with_manifest(
+        "https://example.test/data",
+        tmp_path / "out.bin",
+        source_id="src",
+        dataset_id="ds",
+        producer="test",
+        progress=lambda done, total: seen.append((done, total)),
+        chunk_size=64 * 1024,
+    )
+
+    assert seen, "progress callback should be invoked at least once"
+    assert all(total == len(payload) for _, total in seen)
+    assert seen[-1][0] == len(payload)
+    # Monotonically increasing downloaded counter
+    assert all(seen[i][0] <= seen[i + 1][0] for i in range(len(seen) - 1))
+
+
+def test_download_with_manifest_skips_when_up_to_date(tmp_path):
+    payload = b"abc"
+    target = tmp_path / "cached.bin"
+    target.write_bytes(payload)
+
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        headers = {"Content-Length": str(len(payload))}
+        if request.method == "HEAD":
+            return httpx.Response(200, headers=headers)
+        # GET should not be called when freshness matches
+        return httpx.Response(200, content=payload, headers=headers)
+
+    client = HttpClient(attempts=1, transport=httpx.MockTransport(handler))
+    client.download_with_manifest(
+        "https://example.test/data",
+        target,
+        source_id="src",
+        dataset_id="ds",
+        producer="test",
+    )
+
+    assert calls == ["HEAD"]
+    assert not target.with_suffix(".bin.manifest.json").exists()
+
+
+def test_async_download_with_manifest_streams_and_reports_progress(tmp_path):
+    payload = b"z" * (100 * 1024)
+    handler = _download_handler_factory(payload)
+    client = AsyncHttpClient(
+        attempts=1, transport=httpx.MockTransport(handler)
+    )
+
+    seen: list[tuple[int, int]] = []
+    target = tmp_path / "async.bin"
+
+    async def run() -> None:
+        await client.download_with_manifest(
+            "https://example.test/data",
+            target,
+            source_id="src",
+            dataset_id="ds",
+            producer="test",
+            progress=lambda d, t: seen.append((d, t)),
+        )
+
+    asyncio.run(run())
+
+    assert target.read_bytes() == payload
+    assert seen[-1][0] == len(payload)
+    manifest = json.loads(
+        target.with_suffix(".bin.manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["sha256"] == hashlib.sha256(payload).hexdigest()
+
+
+def test_browser_headers_sent_when_configured():
+    seen: dict[str, str] = {}
+
+    def handler(request):
+        seen["user-agent"] = request.headers["user-agent"]
+        seen["accept-language"] = request.headers["accept-language"]
+        return httpx.Response(200, content=b"ok")
+
+    client = HttpClient(
+        attempts=1,
+        headers=BROWSER_HEADERS,
+        transport=httpx.MockTransport(handler),
+    )
+    client.get_bytes("https://example.test/data")
+
+    assert "Chrome" in seen["user-agent"]
+    assert seen["accept-language"].startswith("pt-BR")

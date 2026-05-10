@@ -12,6 +12,31 @@ from .exceptions import StorageError
 from .files import ensure_dir, sha256_file, write_bytes_atomic, write_text_atomic
 
 
+class BaseDataRepository:
+    """Base class for data client repositories.
+
+    Provides a standard structure for storing raw and processed data.
+    """
+
+    def __init__(self, root: str | os.PathLike[str]) -> None:
+        self.storage = LocalStorage(root)
+
+    def raw_path(self, dataset_id: str, *subkeys: str) -> Path:
+        """Return a path for raw data."""
+        key = "/".join(["raw", dataset_id, *subkeys])
+        return self.storage.path_for(key)
+
+    def processed_path(self, dataset_id: str, *subkeys: str) -> Path:
+        """Return a path for processed data."""
+        key = "/".join(["processed", dataset_id, *subkeys])
+        return self.storage.path_for(key)
+
+    def docs_path(self, dataset_id: str, *subkeys: str) -> Path:
+        """Return a path for documentation and metadata."""
+        key = "/".join(["docs", dataset_id, *subkeys])
+        return self.storage.path_for(key)
+
+
 @dataclass(frozen=True)
 class ObjectStat:
     """Metadata about an object stored by a storage backend."""

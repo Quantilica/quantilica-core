@@ -282,3 +282,35 @@ class MetadataCatalog(MetadataModel):
                 raise MetadataError(f"Unknown territory for series: {item.id}")
         for resource_id in resource_ids:
             validate_id(resource_id, field_name="resource id")
+
+
+def build_simple_catalog(
+    source: Source,
+    dataset: Dataset,
+    resources: list[Resource],
+) -> MetadataCatalog:
+    """Build a validated catalog with one source, one dataset, and N resources.
+
+    Most data clients expose a single source and a single dataset; this helper
+    removes the boilerplate of wiring them together and calling
+    :meth:`MetadataCatalog.validate_references`.
+    """
+    if dataset.source_id != source.id:
+        raise MetadataError(
+            f"Dataset {dataset.id!r} references source "
+            f"{dataset.source_id!r}, expected {source.id!r}"
+        )
+    for resource in resources:
+        if resource.dataset_id != dataset.id:
+            raise MetadataError(
+                f"Resource {resource.id!r} references dataset "
+                f"{resource.dataset_id!r}, expected {dataset.id!r}"
+            )
+
+    catalog = MetadataCatalog(
+        sources=[source],
+        datasets=[dataset],
+        resources=list(resources),
+    )
+    catalog.validate_references()
+    return catalog

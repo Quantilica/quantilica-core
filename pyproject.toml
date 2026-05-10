@@ -51,7 +51,6 @@ exclude = [
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
-ignore = ["UP047"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
