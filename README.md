@@ -18,10 +18,17 @@
 
 ## 🚀 Installation
 
-Add it to your project using `uv`:
+`quantilica-core` is published from this GitHub repository (not on PyPI). Add
+it to your project as a git dependency:
 
 ```bash
-uv add quantilica-core
+uv add "quantilica-core @ git+https://github.com/Quantilica/quantilica-core.git"
+```
+
+Or with pip:
+
+```bash
+pip install "quantilica-core @ git+https://github.com/Quantilica/quantilica-core.git"
 ```
 
 ---
