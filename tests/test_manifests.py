@@ -35,7 +35,7 @@ def test_download_manifest_from_digest():
         url="https://example.test/data.csv",
         sha256="deadbeef",
         size_bytes=1024,
-        producer="tddata",
+        producer="tesouro-direto-fetcher",
         path="/tmp/x.csv",
         metadata={"chunked": True},
     )
