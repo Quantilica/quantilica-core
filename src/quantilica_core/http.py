@@ -260,48 +260,60 @@ class HttpClient:
                 if not force and target.exists():
                     raise
 
-            with self.stream(
-                "GET", url, params=params, headers=headers
-            ) as response:
-                total = int(response.headers.get("Content-Length", 0) or 0)
-                last_modified = response.headers.get("Last-Modified")
-                final_url = str(response.url)
+            outcome: dict[str, Any] = {}
 
-                fd, temp_path = _open_atomic_temp(target)
+            def _stream_attempt() -> None:
+                if progress is not None:
+                    progress(0, 0)
                 downloaded = 0
                 digest = hashlib.sha256()
-                try:
-                    with os.fdopen(fd, "wb") as stream:
-                        for chunk in response.iter_bytes(chunk_size=chunk_size):
-                            if not chunk:
-                                continue
-                            stream.write(chunk)
-                            digest.update(chunk)
-                            downloaded += len(chunk)
-                            if progress is not None:
-                                progress(downloaded, total)
-                        stream.flush()
-                        os.fsync(stream.fileno())
-                    temp_path.replace(target)
-                except OSError as exc:
-                    raise StorageError(
-                        f"Could not stream download to {target}"
-                    ) from exc
-                finally:
-                    if temp_path.exists():
-                        try:
-                            temp_path.unlink()
-                        except OSError:
-                            pass
+                with self.stream(
+                    "GET", url, params=params, headers=headers
+                ) as response:
+                    total = int(response.headers.get("Content-Length", 0) or 0)
+                    outcome["last_modified"] = response.headers.get("Last-Modified")
+                    outcome["final_url"] = str(response.url)
 
-            _sync_mtime_from_last_modified(target, last_modified)
+                    fd, temp_path = _open_atomic_temp(target)
+                    try:
+                        with os.fdopen(fd, "wb") as stream:
+                            for chunk in response.iter_bytes(chunk_size=chunk_size):
+                                if not chunk:
+                                    continue
+                                stream.write(chunk)
+                                digest.update(chunk)
+                                downloaded += len(chunk)
+                                if progress is not None:
+                                    progress(downloaded, total)
+                            stream.flush()
+                            os.fsync(stream.fileno())
+                        temp_path.replace(target)
+                    except OSError as exc:
+                        raise StorageError(
+                            f"Could not stream download to {target}"
+                        ) from exc
+                    finally:
+                        if temp_path.exists():
+                            with contextlib.suppress(OSError):
+                                temp_path.unlink()
+                outcome["sha256"] = digest.hexdigest()
+                outcome["size_bytes"] = downloaded
+
+            retry_call(
+                _stream_attempt,
+                attempts=self.attempts,
+                base_delay=self.retry_base_delay,
+                retry_exceptions=DEFAULT_RETRY_EXCEPTIONS,
+            )
+
+            _sync_mtime_from_last_modified(target, outcome["last_modified"])
             _write_manifest(
                 target,
                 source_id=source_id,
                 dataset_id=dataset_id,
-                url=final_url,
-                sha256=digest.hexdigest(),
-                size_bytes=downloaded,
+                url=outcome["final_url"],
+                sha256=outcome["sha256"],
+                size_bytes=outcome["size_bytes"],
                 producer=producer,
             )
             return target
@@ -518,50 +530,62 @@ class AsyncHttpClient:
                 if not force and target.exists():
                     raise
 
-            async with self.stream(
-                "GET", url, params=params, headers=headers
-            ) as response:
-                total = int(response.headers.get("Content-Length", 0) or 0)
-                last_modified = response.headers.get("Last-Modified")
-                final_url = str(response.url)
+            outcome: dict[str, Any] = {}
 
-                fd, temp_path = _open_atomic_temp(target)
+            async def _stream_attempt() -> None:
+                if progress is not None:
+                    progress(0, 0)
                 downloaded = 0
                 digest = hashlib.sha256()
-                try:
-                    with os.fdopen(fd, "wb") as stream:
-                        async for chunk in response.aiter_bytes(
-                            chunk_size=chunk_size
-                        ):
-                            if not chunk:
-                                continue
-                            stream.write(chunk)
-                            digest.update(chunk)
-                            downloaded += len(chunk)
-                            if progress is not None:
-                                progress(downloaded, total)
-                        stream.flush()
-                        os.fsync(stream.fileno())
-                    temp_path.replace(target)
-                except OSError as exc:
-                    raise StorageError(
-                        f"Could not stream download to {target}"
-                    ) from exc
-                finally:
-                    if temp_path.exists():
-                        try:
-                            temp_path.unlink()
-                        except OSError:
-                            pass
+                async with self.stream(
+                    "GET", url, params=params, headers=headers
+                ) as response:
+                    total = int(response.headers.get("Content-Length", 0) or 0)
+                    outcome["last_modified"] = response.headers.get("Last-Modified")
+                    outcome["final_url"] = str(response.url)
 
-            _sync_mtime_from_last_modified(target, last_modified)
+                    fd, temp_path = _open_atomic_temp(target)
+                    try:
+                        with os.fdopen(fd, "wb") as stream:
+                            async for chunk in response.aiter_bytes(
+                                chunk_size=chunk_size
+                            ):
+                                if not chunk:
+                                    continue
+                                stream.write(chunk)
+                                digest.update(chunk)
+                                downloaded += len(chunk)
+                                if progress is not None:
+                                    progress(downloaded, total)
+                            stream.flush()
+                            os.fsync(stream.fileno())
+                        temp_path.replace(target)
+                    except OSError as exc:
+                        raise StorageError(
+                            f"Could not stream download to {target}"
+                        ) from exc
+                    finally:
+                        if temp_path.exists():
+                            with contextlib.suppress(OSError):
+                                temp_path.unlink()
+                outcome["sha256"] = digest.hexdigest()
+                outcome["size_bytes"] = downloaded
+
+            await async_retry_call(
+                _stream_attempt,
+                attempts=self.attempts,
+                base_delay=self.retry_base_delay,
+                retry_exceptions=DEFAULT_RETRY_EXCEPTIONS,
+            )
+
+            _sync_mtime_from_last_modified(target, outcome["last_modified"])
             _write_manifest(
                 target,
                 source_id=source_id,
                 dataset_id=dataset_id,
-                url=final_url,
-                sha256=digest.hexdigest(),
-                size_bytes=downloaded,
+                url=outcome["final_url"],
+                sha256=outcome["sha256"],
+                size_bytes=outcome["size_bytes"],
                 producer=producer,
             )
             return target
