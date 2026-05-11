@@ -82,6 +82,7 @@ class HttpClient:
         follow_redirects: bool = True,
         attempts: int = 3,
         retry_base_delay: float = 1.0,
+        verify: bool = True,
         transport: httpx.BaseTransport | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
@@ -93,6 +94,7 @@ class HttpClient:
         self.follow_redirects = follow_redirects
         self.attempts = attempts
         self.retry_base_delay = retry_base_delay
+        self.verify = verify
         self.transport = transport
         self.logger = logger or get_logger(__name__)
 
@@ -117,6 +119,7 @@ class HttpClient:
                 timeout=self.timeout,
                 follow_redirects=self.follow_redirects,
                 headers=request_headers,
+                verify=self.verify,
                 transport=self.transport,
             ) as client:
                 response = client.request(
@@ -320,6 +323,7 @@ class HttpClient:
             timeout=self.timeout,
             follow_redirects=self.follow_redirects,
             headers=request_headers,
+            verify=self.verify,
             transport=self.transport,
         ) as client:
             with client.stream(method, url, params=params) as response:
@@ -342,6 +346,7 @@ class AsyncHttpClient:
         follow_redirects: bool = True,
         attempts: int = 3,
         retry_base_delay: float = 1.0,
+        verify: bool = True,
         transport: httpx.AsyncBaseTransport | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
@@ -353,6 +358,7 @@ class AsyncHttpClient:
         self.follow_redirects = follow_redirects
         self.attempts = attempts
         self.retry_base_delay = retry_base_delay
+        self.verify = verify
         self.transport = transport
         self.logger = logger or get_logger(__name__)
 
@@ -377,6 +383,7 @@ class AsyncHttpClient:
                 timeout=self.timeout,
                 follow_redirects=self.follow_redirects,
                 headers=request_headers,
+                verify=self.verify,
                 transport=self.transport,
             ) as client:
                 response = await client.request(
@@ -576,6 +583,7 @@ class AsyncHttpClient:
             timeout=self.timeout,
             follow_redirects=self.follow_redirects,
             headers=request_headers,
+            verify=self.verify,
             transport=self.transport,
         ) as client:
             async with client.stream(method, url, params=params) as response:
