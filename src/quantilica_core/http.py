@@ -170,6 +170,30 @@ class HttpClient:
         """Perform a HEAD request and return the response."""
         return self.request("HEAD", url, params=params, headers=headers)
 
+    def head_metadata(
+        self,
+        url: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Perform a HEAD request and return parsed file metadata.
+
+        Returns ``{"size": int, "last_modified": datetime | None}``.
+        ``last_modified`` is timezone-aware (UTC) or ``None`` when the header
+        is absent or unparseable.  Propagates ``FetchError`` on HTTP failure.
+        """
+        resp = self.head(url, params=params, headers=headers)
+        size = int(resp.headers.get("Content-Length", 0))
+        lm_str = resp.headers.get("Last-Modified")
+        last_modified: datetime | None = None
+        if lm_str:
+            try:
+                last_modified = email.utils.parsedate_to_datetime(lm_str)
+            except Exception:
+                pass
+        return {"size": size, "last_modified": last_modified}
+
     def get_bytes(
         self,
         url: str,
@@ -445,6 +469,28 @@ class AsyncHttpClient:
     ) -> httpx.Response:
         """Perform a HEAD request and return the response."""
         return await self.request("HEAD", url, params=params, headers=headers)
+
+    async def head_metadata(
+        self,
+        url: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Async version of head_metadata.
+
+        Returns ``{"size": int, "last_modified": datetime | None}``.
+        """
+        resp = await self.head(url, params=params, headers=headers)
+        size = int(resp.headers.get("Content-Length", 0))
+        lm_str = resp.headers.get("Last-Modified")
+        last_modified: datetime | None = None
+        if lm_str:
+            try:
+                last_modified = email.utils.parsedate_to_datetime(lm_str)
+            except Exception:
+                pass
+        return {"size": size, "last_modified": last_modified}
 
     async def get_bytes(
         self,

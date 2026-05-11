@@ -4,12 +4,34 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from typing import Literal
 from pathlib import Path, PurePosixPath
 
 from .dates import isoformat_utc
 from .exceptions import StorageError
 from .files import ensure_dir, sha256_file, write_bytes_atomic, write_text_atomic
+
+
+def stamp_filename(
+    base: str,
+    ext: str,
+    timestamp: date | datetime | None,
+    *,
+    precision: Literal["date", "datetime"] = "date",
+) -> str:
+    """Return ``{base}@{stamp}.{ext}`` or ``{base}.{ext}`` when timestamp is None.
+
+    ``precision="date"`` → ``@YYYYMMDD``
+    ``precision="datetime"`` → ``@YYYYMMDDTHHMMSS``
+    """
+    if timestamp is None:
+        return f"{base}.{ext}"
+    if precision == "datetime":
+        if isinstance(timestamp, datetime):
+            return f"{base}@{timestamp:%Y%m%dT%H%M%S}.{ext}"
+        return f"{base}@{timestamp:%Y%m%d}T000000.{ext}"
+    return f"{base}@{timestamp:%Y%m%d}.{ext}"
 
 
 class BaseDataRepository:
