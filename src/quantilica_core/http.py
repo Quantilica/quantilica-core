@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import contextlib
 import email.utils
 import hashlib
@@ -186,7 +187,7 @@ class HttpClient:
         resp = self.head(url, params=params, headers=headers)
         size = int(resp.headers.get("Content-Length", 0))
         lm_str = resp.headers.get("Last-Modified")
-        last_modified: datetime | None = None
+        last_modified: dt.datetime | None = None
         if lm_str:
             try:
                 last_modified = email.utils.parsedate_to_datetime(lm_str)
@@ -482,7 +483,7 @@ class AsyncHttpClient:
         resp = await self.head(url, params=params, headers=headers)
         size = int(resp.headers.get("Content-Length", 0))
         lm_str = resp.headers.get("Last-Modified")
-        last_modified: datetime | None = None
+        last_modified: dt.datetime | None = None
         if lm_str:
             try:
                 last_modified = email.utils.parsedate_to_datetime(lm_str)
