@@ -94,6 +94,7 @@ def _download_handler_factory(
     last_modified: str = _DEFAULT_LAST_MODIFIED,
 ):
     """Build a handler that answers HEAD with size + Last-Modified, GET with payload."""
+
     def handler(request: httpx.Request) -> httpx.Response:
         headers = {
             "Content-Length": str(len(payload)),
@@ -184,9 +185,7 @@ def test_download_with_manifest_skips_when_up_to_date(tmp_path):
 def test_async_download_with_manifest_streams_and_reports_progress(tmp_path):
     payload = b"z" * (100 * 1024)
     handler = _download_handler_factory(payload)
-    client = AsyncHttpClient(
-        attempts=1, transport=httpx.MockTransport(handler)
-    )
+    client = AsyncHttpClient(attempts=1, transport=httpx.MockTransport(handler))
 
     seen: list[tuple[int, int]] = []
     target = tmp_path / "async.bin"

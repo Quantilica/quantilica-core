@@ -5,8 +5,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from typing import Literal
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 from .dates import isoformat_utc
 from .exceptions import StorageError
@@ -146,9 +146,7 @@ class LocalStorage:
             return [self._key_from_path(base)]
         try:
             keys = [
-                self._key_from_path(path)
-                for path in base.rglob("*")
-                if path.is_file()
+                self._key_from_path(path) for path in base.rglob("*") if path.is_file()
             ]
         except OSError as exc:
             raise StorageError(f"Could not list objects: {prefix}") from exc

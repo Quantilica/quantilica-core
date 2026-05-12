@@ -275,9 +275,7 @@ class HttpClient:
             try:
                 head = self.head(url, params=params, headers=headers)
                 if not force and target.exists():
-                    if not _is_remote_more_recent(
-                        head, target, check_size=check_size
-                    ):
+                    if not _is_remote_more_recent(head, target, check_size=check_size):
                         self.logger.debug(f"File is up to date: {target.name}")
                         return target
             except FetchError:

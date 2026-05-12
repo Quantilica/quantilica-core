@@ -23,7 +23,9 @@ def test_file_cache_write_and_read_bytes(tmp_path):
     cache = FileCache(tmp_path)
     key = cache.key_for_url("https://example.test/data")
 
-    entry = cache.write_bytes(key, b"abc", metadata={"url": "https://example.test/data"})
+    entry = cache.write_bytes(
+        key, b"abc", metadata={"url": "https://example.test/data"}
+    )
 
     assert cache.exists(key)
     assert cache.read_bytes(key) == b"abc"
