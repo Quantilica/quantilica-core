@@ -39,14 +39,14 @@ def test_download_resources_basic(tmp_path):
 
     assert len(results) == 1
     assert results[0]["filename"] == "prices@20250101T000000.csv"
-    dest = repo.raw_path("test-dataset", "prices@20250101T000000.csv")
+    dest = repo.dataset_path("test-dataset", "prices@20250101T000000.csv")
     assert dest.exists()
     assert dest.read_bytes() == b"file content"
 
 
 def test_download_resources_skips_size_match(tmp_path):
     repo = StampedDataRepository(tmp_path)
-    dest_dir = repo.raw_path("test-dataset")
+    dest_dir = repo.dataset_path("test-dataset")
     dest_dir.mkdir(parents=True)
     existing = dest_dir / "prices@20250101T000000.csv"
     existing.write_bytes(b"x" * 100)

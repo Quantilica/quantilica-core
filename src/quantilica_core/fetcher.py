@@ -45,7 +45,7 @@ async def _download_one(
     ext: str,
     logger: logging.Logger,
 ) -> dict | None:
-    dest = repo.raw_path(dataset_id, resource.filename)
+    dest = repo.dataset_path(dataset_id, resource.filename)
 
     if resource.size > 0:
         slug = resource.filename.partition("@")[0]
