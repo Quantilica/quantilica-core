@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO
 
@@ -65,6 +66,53 @@ def write_text_atomic(
     target = ensure_parent(path)
     data = content.encode(encoding)
     return write_bytes_atomic(target, data)
+
+
+def write_stream_atomic(
+    path: str | os.PathLike[str],
+    register_callback: Callable[[Callable[[bytes], None]], None],
+) -> tuple[str, int]:
+    """Stream data into a file atomically; return (sha256_hex, size_bytes).
+
+    ``register_callback`` is called with a write-chunk function as its only
+    argument — matching ftplib.retrbinary's callback model::
+
+        ftp.retrbinary("RETR path", register_callback)
+    """
+    target = ensure_parent(path)
+    digest = hashlib.sha256()
+    size = 0
+    fd = -1
+    temp_path: Path | None = None
+    try:
+        fd, raw_temp_path = tempfile.mkstemp(
+            prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+        )
+        temp_path = Path(raw_temp_path)
+        with os.fdopen(fd, "wb") as stream:
+            fd = -1
+
+            def _write_chunk(chunk: bytes) -> None:
+                nonlocal size
+                stream.write(chunk)
+                digest.update(chunk)
+                size += len(chunk)
+
+            register_callback(_write_chunk)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temp_path.replace(target)
+        return digest.hexdigest(), size
+    except OSError as exc:
+        raise StorageError(f"Could not write stream atomically: {target}") from exc
+    finally:
+        if fd != -1:
+            os.close(fd)
+        if temp_path is not None and temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
 
 
 def write_bytes_atomic(path: str | os.PathLike[str], content: bytes) -> Path:
