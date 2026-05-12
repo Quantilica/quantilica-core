@@ -2,7 +2,7 @@ import pytest
 
 from quantilica_core.exceptions import StorageError
 from quantilica_core.files import sha256_bytes
-from quantilica_core.storage import LocalStorage
+from quantilica_core.storage import LocalStorage, StampedDataRepository, slugify
 
 
 def test_local_storage_write_read_and_stat(tmp_path):
@@ -63,3 +63,75 @@ def test_local_storage_missing_read_raises_storage_error(tmp_path):
 
     with pytest.raises(StorageError):
         storage.read_bytes("missing.txt")
+
+
+# --- slugify ---
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("Taxas dos Títulos", "taxas-dos-titulos"),
+        ("operações do tesouro direto", "operacoes-do-tesouro-direto"),
+        ("file name  with   spaces", "file-name-with-spaces"),
+        ("already-slugged", "already-slugged"),
+        ("UPPER CASE", "upper-case"),
+        ("special!@#chars", "specialchars"),
+    ],
+)
+def test_slugify(value, expected):
+    assert slugify(value) == expected
+
+
+# --- StampedDataRepository ---
+
+
+def test_stamped_repo_list_dataset_ids(tmp_path):
+    repo = StampedDataRepository(tmp_path)
+    repo.raw_path("dataset-a", "file.csv").parent.mkdir(parents=True, exist_ok=True)
+    repo.raw_path("dataset-b", "file.csv").parent.mkdir(parents=True, exist_ok=True)
+
+    assert repo.list_dataset_ids() == ["dataset-a", "dataset-b"]
+
+
+def test_stamped_repo_list_dataset_ids_empty(tmp_path):
+    repo = StampedDataRepository(tmp_path)
+    assert repo.list_dataset_ids() == []
+
+
+def test_stamped_repo_get_latest_stamped_file(tmp_path):
+    repo = StampedDataRepository(tmp_path)
+    d = repo.raw_path("ds")
+    d.mkdir(parents=True)
+    (d / "prices@20250101T000000.csv").write_text("old")
+    (d / "prices@20250601T000000.csv").write_text("new")
+    (d / "stock@20250101T000000.csv").write_text("other")
+
+    result = repo.get_latest_stamped_file("ds", "prices")
+
+    assert result is not None
+    assert result.name == "prices@20250601T000000.csv"
+
+
+def test_stamped_repo_get_latest_stamped_file_missing(tmp_path):
+    repo = StampedDataRepository(tmp_path)
+    assert repo.get_latest_stamped_file("nonexistent", "prices") is None
+
+
+def test_stamped_repo_get_all_latest_stamped_files(tmp_path):
+    repo = StampedDataRepository(tmp_path)
+    d = repo.raw_path("ds")
+    d.mkdir(parents=True)
+    (d / "prices@20250101T000000.csv").write_text("old prices")
+    (d / "prices@20250601T000000.csv").write_text("new prices")
+    (d / "stock@20250101T000000.csv").write_text("stock")
+
+    results = repo.get_all_latest_stamped_files("ds")
+    names = sorted(f.name for f in results)
+
+    assert names == ["prices@20250601T000000.csv", "stock@20250101T000000.csv"]
+
+
+def test_stamped_repo_get_all_latest_stamped_files_empty(tmp_path):
+    repo = StampedDataRepository(tmp_path)
+    assert repo.get_all_latest_stamped_files("nonexistent") == []

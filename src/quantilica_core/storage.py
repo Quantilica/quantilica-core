@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path, PurePosixPath
@@ -34,6 +36,15 @@ def stamp_filename(
     return f"{base}@{timestamp:%Y%m%d}.{ext}"
 
 
+def slugify(value: str) -> str:
+    """Normalize a string to a URL-friendly slug."""
+    value = (
+        unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    )
+    value = re.sub(r"[^\w\s-]", "", value).strip().lower()
+    return re.sub(r"[-\s]+", "-", value)
+
+
 class BaseDataRepository:
     """Base class for data client repositories.
 
@@ -57,6 +68,60 @@ class BaseDataRepository:
         """Return a path for documentation and metadata."""
         key = "/".join(["docs", dataset_id, *subkeys])
         return self.storage.path_for(key)
+
+    def list_dataset_ids(self) -> list[str]:
+        """Return all dataset_id directories present under raw/."""
+        raw_root = self.storage.path_for("raw")
+        if not raw_root.exists():
+            return []
+        return sorted(entry.name for entry in raw_root.iterdir() if entry.is_dir())
+
+
+class StampedDataRepository(BaseDataRepository):
+    """BaseDataRepository with slug@timestamp filename conventions.
+
+    Provides helpers for repositories whose files are stamped as
+    ``{slug}@{YYYYMMDDTHHMMSS}.{ext}`` so multiple snapshots coexist and
+    the latest one can be queried efficiently.
+    """
+
+    def get_latest_stamped_file(
+        self, dataset_id: str, slug: str, ext: str = "csv"
+    ) -> Path | None:
+        """Return the newest ``{slug}@*.{ext}`` file in raw/{dataset_id}/."""
+        dataset_dir = self.raw_path(dataset_id)
+        if not dataset_dir.exists():
+            return None
+        latest_file: Path | None = None
+        latest_ts = ""
+        for f in dataset_dir.iterdir():
+            if not f.is_file():
+                continue
+            if not (f.name.startswith(f"{slug}@") and f.name.endswith(f".{ext}")):
+                continue
+            ts = f.name[len(slug) + 1 : -(len(ext) + 1)]
+            if ts > latest_ts:
+                latest_ts = ts
+                latest_file = f
+        return latest_file
+
+    def get_all_latest_stamped_files(
+        self, dataset_id: str, ext: str = "csv"
+    ) -> list[Path]:
+        """Return one file per slug — the latest @timestamp variant of each."""
+        dataset_dir = self.raw_path(dataset_id)
+        if not dataset_dir.exists():
+            return []
+        by_slug: dict[str, tuple[Path, str]] = {}
+        for f in dataset_dir.glob(f"*.{ext}"):
+            if "@" not in f.name:
+                continue
+            slug, _, rest = f.name.partition("@")
+            ts = rest.removesuffix(f".{ext}")
+            current = by_slug.get(slug)
+            if current is None or ts > current[1]:
+                by_slug[slug] = (f, ts)
+        return [pair[0] for pair in by_slug.values()]
 
 
 @dataclass(frozen=True)
