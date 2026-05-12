@@ -88,8 +88,8 @@ def test_slugify(value, expected):
 
 def test_stamped_repo_list_dataset_ids(tmp_path):
     repo = StampedDataRepository(tmp_path)
-    repo.raw_path("dataset-a", "file.csv").parent.mkdir(parents=True, exist_ok=True)
-    repo.raw_path("dataset-b", "file.csv").parent.mkdir(parents=True, exist_ok=True)
+    repo.dataset_path("dataset-a", "file.csv").parent.mkdir(parents=True, exist_ok=True)
+    repo.dataset_path("dataset-b", "file.csv").parent.mkdir(parents=True, exist_ok=True)
 
     assert repo.list_dataset_ids() == ["dataset-a", "dataset-b"]
 
@@ -101,7 +101,7 @@ def test_stamped_repo_list_dataset_ids_empty(tmp_path):
 
 def test_stamped_repo_get_latest_stamped_file(tmp_path):
     repo = StampedDataRepository(tmp_path)
-    d = repo.raw_path("ds")
+    d = repo.dataset_path("ds")
     d.mkdir(parents=True)
     (d / "prices@20250101T000000.csv").write_text("old")
     (d / "prices@20250601T000000.csv").write_text("new")
@@ -120,7 +120,7 @@ def test_stamped_repo_get_latest_stamped_file_missing(tmp_path):
 
 def test_stamped_repo_get_all_latest_stamped_files(tmp_path):
     repo = StampedDataRepository(tmp_path)
-    d = repo.raw_path("ds")
+    d = repo.dataset_path("ds")
     d.mkdir(parents=True)
     (d / "prices@20250101T000000.csv").write_text("old prices")
     (d / "prices@20250601T000000.csv").write_text("new prices")

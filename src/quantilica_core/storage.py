@@ -48,33 +48,27 @@ def slugify(value: str) -> str:
 class BaseDataRepository:
     """Base class for data client repositories.
 
-    Provides a standard structure for storing raw and processed data.
+    Provides a standard structure for storing data under ``{dataset_id}/``
+    directly at the storage root (no ``raw/``/``processed/``/``docs/`` wrapper).
+    Fetchers with additional data categories (documentation, processed
+    artifacts) are responsible for organizing them as they see fit, typically
+    by using ``self.storage.path_for(...)`` directly.
     """
 
     def __init__(self, root: str | os.PathLike[str]) -> None:
         self.storage = LocalStorage(root)
 
-    def raw_path(self, dataset_id: str, *subkeys: str) -> Path:
-        """Return a path for raw data."""
-        key = "/".join(["raw", dataset_id, *subkeys])
-        return self.storage.path_for(key)
-
-    def processed_path(self, dataset_id: str, *subkeys: str) -> Path:
-        """Return a path for processed data."""
-        key = "/".join(["processed", dataset_id, *subkeys])
-        return self.storage.path_for(key)
-
-    def docs_path(self, dataset_id: str, *subkeys: str) -> Path:
-        """Return a path for documentation and metadata."""
-        key = "/".join(["docs", dataset_id, *subkeys])
+    def dataset_path(self, dataset_id: str, *subkeys: str) -> Path:
+        """Return the absolute path of ``dataset_id/subkeys`` under the storage root."""
+        key = "/".join([dataset_id, *subkeys])
         return self.storage.path_for(key)
 
     def list_dataset_ids(self) -> list[str]:
-        """Return all dataset_id directories present under raw/."""
-        raw_root = self.storage.path_for("raw")
-        if not raw_root.exists():
+        """Return all dataset directories at the storage root, sorted."""
+        root = self.storage.root
+        if not root.exists():
             return []
-        return sorted(entry.name for entry in raw_root.iterdir() if entry.is_dir())
+        return sorted(entry.name for entry in root.iterdir() if entry.is_dir())
 
 
 class StampedDataRepository(BaseDataRepository):
@@ -88,8 +82,8 @@ class StampedDataRepository(BaseDataRepository):
     def get_latest_stamped_file(
         self, dataset_id: str, slug: str, ext: str = "csv"
     ) -> Path | None:
-        """Return the newest ``{slug}@*.{ext}`` file in raw/{dataset_id}/."""
-        dataset_dir = self.raw_path(dataset_id)
+        """Return the newest ``{slug}@*.{ext}`` file under ``{dataset_id}/``."""
+        dataset_dir = self.dataset_path(dataset_id)
         if not dataset_dir.exists():
             return None
         latest_file: Path | None = None
@@ -109,7 +103,7 @@ class StampedDataRepository(BaseDataRepository):
         self, dataset_id: str, ext: str = "csv"
     ) -> list[Path]:
         """Return one file per slug — the latest @timestamp variant of each."""
-        dataset_dir = self.raw_path(dataset_id)
+        dataset_dir = self.dataset_path(dataset_id)
         if not dataset_dir.exists():
             return []
         by_slug: dict[str, tuple[Path, str]] = {}
