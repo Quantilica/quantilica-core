@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -44,6 +45,8 @@ async def _download_one(
     producer: str,
     ext: str,
     logger: logging.Logger,
+    show_progress: bool,
+    on_file_done: Callable[[dict | None], None] | None,
 ) -> dict | None:
     dest = repo.dataset_path(dataset_id, resource.filename)
 
@@ -54,23 +57,28 @@ async def _download_one(
             logger.debug(
                 f"Skipping {resource.filename}: matching local copy {latest.name}"
             )
+            if on_file_done:
+                on_file_done(None)
             return None
 
-    pbar = tqdm(
-        total=resource.size or None,
-        unit="B",
-        unit_scale=True,
-        desc=f"Downloading {resource.filename[:30]}...",
-        leave=False,
-    )
-    last_seen = 0
+    pbar = None
+    _on_progress = None
+    if show_progress:
+        pbar = tqdm(
+            total=resource.size or None,
+            unit="B",
+            unit_scale=True,
+            desc=f"Downloading {resource.filename[:30]}...",
+            leave=False,
+        )
+        last_seen = 0
 
-    def _on_progress(downloaded: int, total: int) -> None:
-        nonlocal last_seen
-        if total and pbar.total != total:
-            pbar.total = total
-        pbar.update(downloaded - last_seen)
-        last_seen = downloaded
+        def _on_progress(downloaded: int, total: int) -> None:
+            nonlocal last_seen
+            if total and pbar.total != total:
+                pbar.total = total
+            pbar.update(downloaded - last_seen)
+            last_seen = downloaded
 
     try:
         async with semaphore:
@@ -90,16 +98,22 @@ async def _download_one(
                 dest.unlink()
             except OSError:
                 pass
+        if on_file_done:
+            on_file_done(None)
         return None
     finally:
-        pbar.close()
+        if pbar is not None:
+            pbar.close()
 
-    return {
+    result = {
         "url": resource.url,
         "filename": resource.filename,
         "destination": dest,
         "file_size": dest.stat().st_size,
     }
+    if on_file_done:
+        on_file_done(result)
+    return result
 
 
 async def download_resources(
@@ -113,6 +127,8 @@ async def download_resources(
     ext: str = "csv",
     max_concurrency: int = 3,
     logger: logging.Logger | None = None,
+    show_progress: bool = False,
+    on_file_done: Callable[[dict | None], None] | None = None,
 ) -> list[dict]:
     """Download resources concurrently; skip when local file size matches remote.
 
@@ -132,6 +148,8 @@ async def download_resources(
             producer=producer,
             ext=ext,
             logger=_log,
+            show_progress=show_progress,
+            on_file_done=on_file_done,
         )
         for resource in resources
     ]
