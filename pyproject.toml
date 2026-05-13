@@ -45,10 +45,7 @@ dev = [
 [tool.ruff]
 line-length = 88
 target-version = "py312"
-exclude = [
-    ".uv-cache",
-    ".venv",
-]
+exclude = [".uv-cache", ".venv"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
