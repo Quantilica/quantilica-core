@@ -1,10 +1,17 @@
 import json
+from dataclasses import replace
 
 from quantilica_core.files import sha256_bytes
 from quantilica_core.manifests import (
+    MANIFEST_VERSION,
+    ContentFingerprint,
     DatasetManifest,
     DownloadManifest,
+    ExecutionInfo,
+    Lineage,
+    QualitySignals,
     RunManifest,
+    SourceMetadata,
 )
 
 
@@ -96,6 +103,63 @@ def test_dataset_manifest_serializes_nested_resources():
 
     assert payload["title"] == "IPCA"
     assert payload["resources"][0]["url"] == "https://example.test/data.json"
+
+
+def test_download_manifest_version_default():
+    manifest = DownloadManifest.from_content(
+        source_id="ibge",
+        dataset_id="sidra-ipca",
+        url="https://example.test/data.json",
+        content=b"abc",
+    )
+
+    assert manifest.manifest_version == MANIFEST_VERSION
+
+
+def test_rich_field_groups_default_to_none():
+    manifest = DownloadManifest.from_content(
+        source_id="ibge",
+        dataset_id="sidra-ipca",
+        url="https://example.test/data.json",
+        content=b"abc",
+    )
+
+    assert manifest.fingerprint is None
+    assert manifest.source_meta is None
+    assert manifest.lineage is None
+    assert manifest.quality is None
+    assert manifest.execution is None
+
+
+def test_rich_field_groups_round_trip(tmp_path):
+    base = DownloadManifest.from_content(
+        source_id="ibge",
+        dataset_id="sidra-ipca",
+        url="https://example.test/data.json",
+        content=b"abc",
+    )
+    manifest = replace(
+        base,
+        fingerprint=ContentFingerprint(
+            content_type="application/json",
+            row_count=120,
+            temporal_extent=["2020-01", "2025-04"],
+        ),
+        source_meta=SourceMetadata(expected_cadence="monthly"),
+        lineage=Lineage(derived_from=["deadbeef"], pipeline_id="ipca"),
+        quality=QualitySignals(validation_status="passed", null_ratio=0.0),
+        execution=ExecutionInfo(duration_ms=842, retry_count=1),
+    )
+
+    path = manifest.write_json(tmp_path / "manifest.json")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["fingerprint"]["row_count"] == 120
+    assert payload["fingerprint"]["temporal_extent"] == ["2020-01", "2025-04"]
+    assert payload["source_meta"]["expected_cadence"] == "monthly"
+    assert payload["lineage"]["derived_from"] == ["deadbeef"]
+    assert payload["quality"]["validation_status"] == "passed"
+    assert payload["execution"]["duration_ms"] == 842
 
 
 def test_run_manifest_start_and_finish():

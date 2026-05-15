@@ -10,10 +10,79 @@ from typing import Any
 from .dates import isoformat_utc
 from .files import sha256_bytes, sha256_file, write_text_atomic
 
+# Current DownloadManifest schema version. Readers treat a missing
+# ``manifest_version`` field as version 1.
+MANIFEST_VERSION = 2
+
+
+@dataclass(frozen=True)
+class ContentFingerprint:
+    """Structural fingerprint of a downloaded artifact's content.
+
+    Goes beyond the byte-level ``sha256`` to describe the shape of the
+    data, so a structural change can be detected without a full diff.
+    """
+
+    content_type: str | None = None
+    schema_hash: str | None = None
+    row_count: int | None = None
+    column_count: int | None = None
+    # Smallest and largest period covered, e.g. ["2020-01", "2025-04"].
+    temporal_extent: list[str] | None = None
+    geographic_extent: list[str] | None = None
+
+
+@dataclass(frozen=True)
+class SourceMetadata:
+    """Metadata reported by the upstream source about the resource."""
+
+    etag: str | None = None
+    last_modified: str | None = None
+    published_at: str | None = None
+    # Expected update cadence: daily, weekly, monthly, quarterly, yearly...
+    expected_cadence: str | None = None
+
+
+@dataclass(frozen=True)
+class Lineage:
+    """Provenance links from this artifact to the inputs it derives from."""
+
+    # SHA-256 digests of the input artifacts (e.g. transform inputs).
+    derived_from: list[str] = field(default_factory=list)
+    pipeline_id: str | None = None
+
+
+@dataclass(frozen=True)
+class QualitySignals:
+    """Data quality signals computed during ingestion."""
+
+    validation_status: str | None = None
+    null_ratio: float | None = None
+    # Difference from the previous version: rows added/removed, cells changed.
+    diff_from_previous: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class ExecutionInfo:
+    """Execution and environment details supporting reproducibility."""
+
+    duration_ms: int | None = None
+    retry_count: int | None = None
+    environment: dict[str, Any] | None = None
+    data_license: str | None = None
+
 
 @dataclass(frozen=True)
 class DownloadManifest:
-    """Provenance for a downloaded resource."""
+    """Provenance for a downloaded resource.
+
+    The optional ``fingerprint``, ``source_meta``, ``lineage``, ``quality``
+    and ``execution`` groups are usually populated after the base manifest is
+    built (e.g. once the data is parsed or validated). Since the manifest is
+    frozen, enrich it with :func:`dataclasses.replace`::
+
+        manifest = replace(manifest, quality=QualitySignals(...))
+    """
 
     source_id: str
     dataset_id: str
@@ -26,6 +95,12 @@ class DownloadManifest:
     producer: str | None = None
     producer_version: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    manifest_version: int = MANIFEST_VERSION
+    fingerprint: ContentFingerprint | None = None
+    source_meta: SourceMetadata | None = None
+    lineage: Lineage | None = None
+    quality: QualitySignals | None = None
+    execution: ExecutionInfo | None = None
 
     @classmethod
     def from_content(
