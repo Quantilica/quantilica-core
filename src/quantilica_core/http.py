@@ -171,6 +171,42 @@ class HttpClient:
         """Perform a HEAD request and return the response."""
         return self.request("HEAD", url, params=params, headers=headers)
 
+    def head_or_get(
+        self,
+        url: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> httpx.Response:
+        """Perform a HEAD request, falling back to GET with streaming if unsupported.
+
+        Some servers don't support HEAD requests (e.g. return 405 Method Not
+        Allowed). This method tries HEAD first, and if it fails with 405 or
+        501, opens a GET with streaming, reads only headers, and closes the
+        connection without downloading the body.
+        """
+        try:
+            return self.head(url, params=params, headers=headers)
+        except HttpStatusError as e:
+            if e.status_code not in (405, 501):
+                raise
+        request_headers = dict(self.headers)
+        if headers:
+            request_headers.update(headers)
+        with httpx.Client(
+            timeout=self.timeout,
+            follow_redirects=self.follow_redirects,
+            headers=request_headers,
+            verify=self.verify,
+            transport=self.transport,
+        ) as client:
+            with client.stream("GET", url, params=params) as response:
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    raise HttpStatusError(str(response.url), response.status_code) from exc
+                return response
+
     def head_metadata(
         self,
         url: str,
@@ -185,6 +221,29 @@ class HttpClient:
         is absent or unparseable.  Propagates ``FetchError`` on HTTP failure.
         """
         resp = self.head(url, params=params, headers=headers)
+        size = int(resp.headers.get("Content-Length", 0))
+        lm_str = resp.headers.get("Last-Modified")
+        last_modified: dt.datetime | None = None
+        if lm_str:
+            try:
+                last_modified = email.utils.parsedate_to_datetime(lm_str)
+            except Exception:
+                pass
+        return {"size": size, "last_modified": last_modified}
+
+    def head_metadata_or_get(
+        self,
+        url: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Perform a HEAD request for metadata, falling back to GET if unsupported.
+
+        Returns ``{"size": int, "last_modified": datetime | None}``.
+        Uses :meth:`head_or_get` internally.
+        """
+        resp = self.head_or_get(url, params=params, headers=headers)
         size = int(resp.headers.get("Content-Length", 0))
         lm_str = resp.headers.get("Last-Modified")
         last_modified: dt.datetime | None = None
@@ -274,7 +333,7 @@ class HttpClient:
             self.logger, "download-with-manifest", url=url, target=target.name
         ):
             try:
-                head = self.head(url, params=params, headers=headers)
+                head = self.head_or_get(url, params=params, headers=headers)
                 if not force and target.exists():
                     if not _is_remote_more_recent(head, target, check_size=check_size):
                         self.logger.debug(f"File is up to date: {target.name}")
@@ -469,6 +528,41 @@ class AsyncHttpClient:
         """Perform a HEAD request and return the response."""
         return await self.request("HEAD", url, params=params, headers=headers)
 
+    async def head_or_get(
+        self,
+        url: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> httpx.Response:
+        """Perform a HEAD request, falling back to GET with streaming if unsupported.
+
+        Some servers don't support HEAD requests. This method tries HEAD first,
+        and if it fails with 405 or 501, opens a GET with streaming, reads only
+        headers, and closes the connection without downloading the body.
+        """
+        try:
+            return await self.head(url, params=params, headers=headers)
+        except HttpStatusError as e:
+            if e.status_code not in (405, 501):
+                raise
+        request_headers = dict(self.headers)
+        if headers:
+            request_headers.update(headers)
+        async with httpx.AsyncClient(
+            timeout=self.timeout,
+            follow_redirects=self.follow_redirects,
+            headers=request_headers,
+            verify=self.verify,
+            transport=self.transport,
+        ) as client:
+            async with client.stream("GET", url, params=params) as response:
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    raise HttpStatusError(str(response.url), response.status_code) from exc
+                return response
+
     async def head_metadata(
         self,
         url: str,
@@ -481,6 +575,29 @@ class AsyncHttpClient:
         Returns ``{"size": int, "last_modified": datetime | None}``.
         """
         resp = await self.head(url, params=params, headers=headers)
+        size = int(resp.headers.get("Content-Length", 0))
+        lm_str = resp.headers.get("Last-Modified")
+        last_modified: dt.datetime | None = None
+        if lm_str:
+            try:
+                last_modified = email.utils.parsedate_to_datetime(lm_str)
+            except Exception:
+                pass
+        return {"size": size, "last_modified": last_modified}
+
+    async def head_metadata_or_get(
+        self,
+        url: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Async version of head_metadata with fallback.
+
+        Returns ``{"size": int, "last_modified": datetime | None}``.
+        Uses :meth:`head_or_get` internally.
+        """
+        resp = await self.head_or_get(url, params=params, headers=headers)
         size = int(resp.headers.get("Content-Length", 0))
         lm_str = resp.headers.get("Last-Modified")
         last_modified: dt.datetime | None = None
@@ -566,7 +683,7 @@ class AsyncHttpClient:
             self.logger, "download-with-manifest-async", url=url, target=target.name
         ):
             try:
-                head = await self.head(url, params=params, headers=headers)
+                head = await self.head_or_get(url, params=params, headers=headers)
                 if not force and target.exists():
                     if not _is_remote_more_recent(head, target, check_size=check_size):
                         self.logger.debug(f"File is up to date: {target.name}")
