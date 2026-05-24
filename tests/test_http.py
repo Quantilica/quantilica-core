@@ -147,11 +147,16 @@ def test_download_with_manifest_invokes_progress(tmp_path):
         chunk_size=64 * 1024,
     )
 
-    assert seen, "progress callback should be invoked at least once"
-    assert all(total == len(payload) for _, total in seen)
-    assert seen[-1][0] == len(payload)
+    # Drop the (0, 0) retry-reset signal emitted at the start of each attempt.
+    progressed = [(done, total) for done, total in seen if total]
+    assert progressed, "progress callback should report real progress"
+    assert all(total == len(payload) for _, total in progressed)
+    assert progressed[-1][0] == len(payload)
     # Monotonically increasing downloaded counter
-    assert all(seen[i][0] <= seen[i + 1][0] for i in range(len(seen) - 1))
+    assert all(
+        progressed[i][0] <= progressed[i + 1][0]
+        for i in range(len(progressed) - 1)
+    )
 
 
 def test_download_with_manifest_skips_when_up_to_date(tmp_path):
@@ -208,6 +213,48 @@ def test_async_download_with_manifest_streams_and_reports_progress(tmp_path):
         target.with_suffix(".bin.manifest.json").read_text(encoding="utf-8")
     )
     assert manifest["sha256"] == hashlib.sha256(payload).hexdigest()
+
+
+def test_head_last_modified_date_returns_date():
+    from datetime import date
+
+    handler = _download_handler_factory(b"abc")
+    client = HttpClient(attempts=1, transport=httpx.MockTransport(handler))
+
+    # _DEFAULT_LAST_MODIFIED == "Wed, 21 Oct 2026 07:28:00 GMT"
+    assert client.head_last_modified_date(
+        "https://example.test/data"
+    ) == date(2026, 10, 21)
+
+
+def test_head_last_modified_date_none_on_failure():
+    def handler(request):
+        return httpx.Response(500)
+
+    client = HttpClient(attempts=1, transport=httpx.MockTransport(handler))
+
+    assert client.head_last_modified_date("https://example.test/data") is None
+
+
+def test_head_last_modified_date_none_when_header_absent():
+    def handler(request):
+        return httpx.Response(200)
+
+    client = HttpClient(attempts=1, transport=httpx.MockTransport(handler))
+
+    assert client.head_last_modified_date("https://example.test/data") is None
+
+
+def test_async_head_last_modified_date_returns_date():
+    from datetime import date
+
+    handler = _download_handler_factory(b"abc")
+    client = AsyncHttpClient(attempts=1, transport=httpx.MockTransport(handler))
+
+    async def run() -> object:
+        return await client.head_last_modified_date("https://example.test/data")
+
+    assert asyncio.run(run()) == date(2026, 10, 21)
 
 
 def test_browser_headers_sent_when_configured():

@@ -28,6 +28,25 @@ def ensure_parent(path: str | os.PathLike[str]) -> Path:
     return target
 
 
+def is_complete_file(
+    path: str | os.PathLike[str],
+    expected_size: int | None = None,
+) -> bool:
+    """Return ``True`` if ``path`` is a file already present and complete.
+
+    When ``expected_size`` is given, the file must also match that byte size
+    (guards against truncated/partial downloads). Use to skip work that does
+    not go through :meth:`HttpClient.download_with_manifest` (which has its
+    own freshness check).
+    """
+    target = Path(path).expanduser()
+    if not target.is_file():
+        return False
+    if expected_size is not None and target.stat().st_size != expected_size:
+        return False
+    return True
+
+
 def sha256_bytes(content: bytes) -> str:
     """Return the SHA-256 hex digest for bytes."""
     return hashlib.sha256(content).hexdigest()

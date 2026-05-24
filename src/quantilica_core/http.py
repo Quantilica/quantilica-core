@@ -254,6 +254,26 @@ class HttpClient:
                 pass
         return {"size": size, "last_modified": last_modified}
 
+    def head_last_modified_date(
+        self,
+        url: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> dt.date | None:
+        """Return the ``Last-Modified`` date from a HEAD request, or ``None``.
+
+        Never raises: any fetch/parse failure is logged as a warning and
+        returns ``None`` (handy for building stamped filenames).
+        """
+        try:
+            meta = self.head_metadata(url, params=params, headers=headers)
+        except Exception as exc:
+            self.logger.warning(f"Could not fetch metadata for {url}: {exc}")
+            return None
+        last_modified = meta.get("last_modified")
+        return last_modified.date() if last_modified else None
+
     def get_bytes(
         self,
         url: str,
@@ -607,6 +627,22 @@ class AsyncHttpClient:
             except Exception:
                 pass
         return {"size": size, "last_modified": last_modified}
+
+    async def head_last_modified_date(
+        self,
+        url: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> dt.date | None:
+        """Async version of :meth:`HttpClient.head_last_modified_date`."""
+        try:
+            meta = await self.head_metadata(url, params=params, headers=headers)
+        except Exception as exc:
+            self.logger.warning(f"Could not fetch metadata for {url}: {exc}")
+            return None
+        last_modified = meta.get("last_modified")
+        return last_modified.date() if last_modified else None
 
     async def get_bytes(
         self,

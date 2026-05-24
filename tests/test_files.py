@@ -4,6 +4,7 @@ from quantilica_core.exceptions import StorageError
 from quantilica_core.files import (
     ensure_dir,
     ensure_parent,
+    is_complete_file,
     sha256_bytes,
     sha256_file,
     write_bytes_atomic,
@@ -16,6 +17,29 @@ def test_ensure_dir_creates_directory(tmp_path):
 
     assert path.exists()
     assert path.is_dir()
+
+
+def test_is_complete_file_missing(tmp_path):
+    assert is_complete_file(tmp_path / "nope.bin") is False
+
+
+def test_is_complete_file_exists_no_size_check(tmp_path):
+    target = tmp_path / "data.bin"
+    target.write_bytes(b"abc")
+
+    assert is_complete_file(target) is True
+
+
+def test_is_complete_file_size_match(tmp_path):
+    target = tmp_path / "data.bin"
+    target.write_bytes(b"abc")
+
+    assert is_complete_file(target, expected_size=3) is True
+    assert is_complete_file(target, expected_size=99) is False
+
+
+def test_is_complete_file_rejects_directory(tmp_path):
+    assert is_complete_file(tmp_path) is False
 
 
 def test_ensure_parent_creates_parent_directory(tmp_path):

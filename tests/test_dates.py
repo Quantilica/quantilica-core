@@ -1,6 +1,15 @@
 from datetime import UTC, datetime, timedelta, timezone
 
-from quantilica_core.dates import isoformat_utc, parse_iso_datetime, to_utc, utc_now
+import pytest
+
+from quantilica_core.dates import (
+    expand_year_range,
+    isoformat_utc,
+    parse_iso_datetime,
+    to_utc,
+    utc_now,
+    year_month_partition,
+)
 
 
 def test_utc_now_is_timezone_aware_utc():
@@ -36,3 +45,27 @@ def test_parse_iso_datetime_normalizes_to_utc():
     result = parse_iso_datetime("2026-05-09T09:30:00-03:00")
 
     assert result == datetime(2026, 5, 9, 12, 30, 0, tzinfo=UTC)
+
+
+def test_expand_year_range_single_and_range():
+    assert expand_year_range("2020") == [2020]
+    assert expand_year_range("2020:2023") == [2020, 2021, 2022, 2023]
+
+
+def test_expand_year_range_descending_and_mixed():
+    assert expand_year_range("2023:2020") == [2023, 2022, 2021, 2020]
+    assert expand_year_range("2019", "2021:2022") == [2019, 2021, 2022]
+
+
+def test_expand_year_range_accepts_ints():
+    assert expand_year_range(2020, 2021) == [2020, 2021]
+
+
+def test_expand_year_range_rejects_garbage():
+    with pytest.raises(ValueError):
+        expand_year_range("not-a-year")
+
+
+def test_year_month_partition():
+    assert year_month_partition(2024) == "2024"
+    assert year_month_partition(2024, 3) == "202403"

@@ -36,6 +36,21 @@ def stamp_filename(
     return f"{base}@{timestamp:%Y%m%d}.{ext}"
 
 
+def build_stamped_filename(
+    *parts: str | int | None,
+    ext: str,
+    timestamp: date | datetime | None = None,
+    precision: Literal["date", "datetime"] = "date",
+) -> str:
+    """Join truthy ``parts`` with ``_`` and apply :func:`stamp_filename`.
+
+    Example: ``build_stamped_filename("exp", 2024, ext="csv", timestamp=d)``
+    → ``exp_2024@20240315.csv``. Falsy parts (``None``/``""``) are dropped.
+    """
+    base = "_".join(str(p) for p in parts if p not in (None, ""))
+    return stamp_filename(base, ext, timestamp, precision=precision)
+
+
 def slugify(value: str) -> str:
     """Normalize a string to a URL-friendly slug."""
     value = (

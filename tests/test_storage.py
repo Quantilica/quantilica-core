@@ -1,8 +1,35 @@
+from datetime import date
+
 import pytest
 
 from quantilica_core.exceptions import StorageError
 from quantilica_core.files import sha256_bytes
-from quantilica_core.storage import LocalStorage, StampedDataRepository, slugify
+from quantilica_core.storage import (
+    LocalStorage,
+    StampedDataRepository,
+    build_stamped_filename,
+    slugify,
+)
+
+
+def test_build_stamped_filename_joins_parts_and_stamps():
+    name = build_stamped_filename(
+        "exp", 2024, ext="csv", timestamp=date(2024, 3, 15)
+    )
+
+    assert name == "exp_2024@20240315.csv"
+
+
+def test_build_stamped_filename_drops_falsy_parts():
+    assert build_stamped_filename("caged", None, "", ext="csv") == "caged.csv"
+
+
+def test_build_stamped_filename_datetime_precision():
+    name = build_stamped_filename(
+        "td", ext="csv", timestamp=date(2024, 3, 15), precision="datetime"
+    )
+
+    assert name == "td@20240315T000000.csv"
 
 
 def test_local_storage_write_read_and_stat(tmp_path):
