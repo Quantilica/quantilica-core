@@ -153,10 +153,16 @@ class LocalStorage:
     def path_for(self, key: str) -> Path:
         """Return the absolute path for a storage key."""
         normalized_key = self.normalize_key(key)
+        # normalize_key guarantees no '..' and no absolute paths, so joining
+        # to self.root (already resolved) always stays within the root.
+        # resolve() is intentionally omitted: it would follow symlinks and
+        # could return a path outside self.root for junction-mounted dirs,
+        # which is a legitimate user configuration (not a security issue here
+        # since keys are always generated from internal FTP listings).
         target = self.root / Path(normalized_key)
         if not target.is_relative_to(self.root):
             raise StorageError(f"Storage key escapes root: {key}")
-        return target.resolve()
+        return target
 
     def normalize_key(self, key: str) -> str:
         """Normalize and validate an object key."""
