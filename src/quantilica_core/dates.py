@@ -53,8 +53,9 @@ def expand_year_range(*specs: str | int) -> list[int]:
     return years
 
 
-def year_month_partition(year: int, month: int | None = None) -> str:
+def year_month_partition(year: int | str, month: int | str | None = None) -> str:
     """Return a partition string: ``"YYYY"`` or ``"YYYYMM"``."""
+    y = int(year)
     if month is None:
-        return f"{year:04d}"
-    return f"{year:04d}{month:02d}"
+        return f"{y:04d}"
+    return f"{y:04d}{int(month):02d}"
