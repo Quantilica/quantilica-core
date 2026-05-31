@@ -190,14 +190,15 @@ class FtpClient:
         producer: str,
         force: bool = False,
         metadata: dict[str, Any] | None = None,
+        progress_callback: Callable[[int], None] | None = None,
     ) -> Path:
-        """Download a file from FTP with freshness check, streaming write, and manifest."""
+        """Download a file from FTP; freshness check, streaming write, and manifest."""
         target = Path(target_path)
         ensure_parent(target)
         with log_step(
             self.logger, "ftp-download-with-manifest", host=self.host, path=remote_path
         ):
-            # One-shot freshness check on a throwaway connection; any failure proceeds to download.
+            # Freshness probe — any failure falls through to download.
             if not force and target.exists():
                 with contextlib.suppress(Exception):
                     with self._open() as ftp:
@@ -214,9 +215,15 @@ class FtpClient:
             def _attempt() -> None:
                 with self._open() as ftp:
                     try:
-                        sha256, size_bytes = write_stream_atomic(
-                            target, lambda cb: ftp.retrbinary(f"RETR {remote_path}", cb)
-                        )
+                        def _stream(cb: Callable[[bytes], None]) -> None:
+                            def _tracked(data: bytes) -> None:
+                                cb(data)
+                                if progress_callback is not None:
+                                    progress_callback(len(data))
+
+                            ftp.retrbinary(f"RETR {remote_path}", _tracked)
+
+                        sha256, size_bytes = write_stream_atomic(target, _stream)
                     except ftplib.error_perm as exc:
                         raise FetchError(f"FTP file not found: {remote_path}") from exc
                     outcome.update(sha256=sha256, size_bytes=size_bytes)
