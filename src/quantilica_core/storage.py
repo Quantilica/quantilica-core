@@ -153,10 +153,10 @@ class LocalStorage:
     def path_for(self, key: str) -> Path:
         """Return the absolute path for a storage key."""
         normalized_key = self.normalize_key(key)
-        target = (self.root / Path(normalized_key)).resolve()
-        if target != self.root and self.root not in target.parents:
+        target = self.root / Path(normalized_key)
+        if not target.is_relative_to(self.root):
             raise StorageError(f"Storage key escapes root: {key}")
-        return target
+        return target.resolve()
 
     def normalize_key(self, key: str) -> str:
         """Normalize and validate an object key."""

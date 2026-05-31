@@ -6,6 +6,8 @@ import contextlib
 import ftplib
 import logging
 import os
+import socket as _socket
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -16,6 +18,8 @@ from .files import ensure_parent, write_stream_atomic
 from .logging import get_logger, log_step
 from .manifests import DownloadManifest
 from .retry import exponential_delay, retry_call
+
+_logger = get_logger(__name__)
 
 # Errors that warrant a retry (excludes error_perm which is a permanent 5xx).
 FTP_TRANSIENT_ERRORS: tuple[type[BaseException], ...] = (
@@ -57,6 +61,72 @@ def ftp_connect(
     raise FetchError(
         f"Could not connect to {host} after {attempts} attempts"
     ) from last_exc
+
+
+class MonitoredFTP(ftplib.FTP):
+    """ftplib.FTP com idle-timeout e interrupção de transferência de dados.
+
+    Rastreia o data socket durante ``retrbinary()`` para permitir:
+
+    - Interrupção imediata via :meth:`interrupt_transfer` (útil em workers com
+      mecanismo de kill).
+    - Watchdog thread que aborta transferências travadas após ``idle_timeout``
+      segundos sem bytes recebidos.
+    - TCP keepalive ativado automaticamente no socket de controle.
+    """
+
+    def __init__(self, *args, idle_timeout: float = 90.0, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.idle_timeout = idle_timeout
+        self._data_conn: _socket.socket | None = None
+
+    def connect(self, host="", port=0, timeout=None, source_address=None):
+        result = super().connect(host, port, timeout, source_address)
+        with contextlib.suppress(OSError):
+            self.sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)
+        return result
+
+    def interrupt_transfer(self) -> None:
+        """Fecha o data socket para interromper um ``retrbinary()`` em andamento."""
+        conn = self._data_conn
+        if conn is not None:
+            with contextlib.suppress(OSError):
+                conn.shutdown(_socket.SHUT_RDWR)
+
+    def retrbinary(
+        self, cmd: str, callback, blocksize: int = 8192, rest=None
+    ) -> str:
+        """Como ``FTP.retrbinary``, mas com watchdog de idle-timeout."""
+        last_chunk = [time.monotonic()]
+        stop_event = threading.Event()
+
+        def _watchdog() -> None:
+            while not stop_event.wait(timeout=5.0):
+                if time.monotonic() - last_chunk[0] > self.idle_timeout:
+                    _logger.warning(
+                        "FTP transfer stalled (%.0f s sem dados), interrompendo.",
+                        self.idle_timeout,
+                    )
+                    self.interrupt_transfer()
+                    return
+
+        self.voidcmd("TYPE I")
+        with self.transfercmd(cmd, rest) as conn:
+            self._data_conn = conn
+            wdog = threading.Thread(target=_watchdog, daemon=True)
+            wdog.start()
+            try:
+                while True:
+                    data = conn.recv(blocksize)
+                    if not data:
+                        break
+                    last_chunk[0] = time.monotonic()
+                    callback(data)
+            finally:
+                self._data_conn = None
+                stop_event.set()
+                wdog.join(timeout=2.0)
+        return self.voidresp()
 
 
 class FtpClient:
