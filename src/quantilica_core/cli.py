@@ -87,3 +87,27 @@ def make_download_progress(console: Console | None = None) -> Progress:
         TimeRemainingColumn(),
         console=console or get_console(),
     )
+
+
+def expand_years_cli(
+    years: list[str] | None,
+    default_range: str | None = None,
+    console: Console | None = None,
+) -> list[int]:
+    """Expand CLI year/range arguments (e.g. ``["2020:2022", "2024"]``).
+
+    If ``years`` is empty and ``default_range`` is provided, it expands the default range.
+    Prints a warning to the console/stderr for any invalid specs.
+    """
+    from quantilica_core.dates import expand_year_range
+
+    con = console or get_console()
+    specs = years if years else ([default_range] if default_range else [])
+    result: list[int] = []
+    for arg in specs:
+        try:
+            result.extend(expand_year_range(arg))
+        except ValueError:
+            con.print(f"[yellow]Aviso:[/yellow] ano/intervalo inválido '{arg}'")
+    return result
+
