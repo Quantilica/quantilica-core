@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from quantilica_core.exceptions import MetadataError
-from quantilica_core.metadata import (
+from quantilica.core.exceptions import MetadataError
+from quantilica.core.metadata import (
     Dataset,
     Dimension,
     IngestionRun,

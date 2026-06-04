@@ -2,9 +2,9 @@ import asyncio
 
 import httpx
 
-from quantilica_core.fetcher import RemoteResource, download_resources
-from quantilica_core.http import AsyncHttpClient
-from quantilica_core.storage import StampedDataRepository
+from quantilica.core.fetcher import RemoteResource, download_resources
+from quantilica.core.http import AsyncHttpClient
+from quantilica.core.storage import StampedDataRepository
 
 
 def _make_client(content: bytes = b"data") -> AsyncHttpClient:

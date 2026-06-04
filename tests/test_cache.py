@@ -1,4 +1,4 @@
-from quantilica_core.cache import FileCache
+from quantilica.core.cache import FileCache
 
 
 def test_file_cache_key_for_url_is_deterministic(tmp_path):

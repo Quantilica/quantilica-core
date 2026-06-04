@@ -52,6 +52,12 @@ dev = [
 testpaths = ["tests"]
 addopts = ["-p", "no:cacheprovider"]
 
+[tool.hatch.build]
+sources = ["src"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/quantilica/core"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

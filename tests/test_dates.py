@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
-from quantilica_core.dates import (
+from quantilica.core.dates import (
     expand_year_range,
     isoformat_utc,
     parse_iso_datetime,

@@ -1,6 +1,6 @@
 import pytest
 
-from quantilica_core.retry import RetryError, exponential_delay, retry_call, with_retry
+from quantilica.core.retry import RetryError, exponential_delay, retry_call, with_retry
 
 
 def test_exponential_delay_caps_at_max_delay():

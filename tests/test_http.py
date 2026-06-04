@@ -5,8 +5,8 @@ import json
 import httpx
 import pytest
 
-from quantilica_core.exceptions import FetchError
-from quantilica_core.http import (
+from quantilica.core.exceptions import FetchError
+from quantilica.core.http import (
     BROWSER_HEADERS,
     AsyncHttpClient,
     HttpClient,

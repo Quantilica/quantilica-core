@@ -2,8 +2,8 @@ import os
 
 import pytest
 
-from quantilica_core.config import EnvSettings, load_dotenv
-from quantilica_core.exceptions import ConfigError
+from quantilica.core.config import EnvSettings, load_dotenv
+from quantilica.core.exceptions import ConfigError
 
 
 def test_env_settings_reads_prefixed_values():

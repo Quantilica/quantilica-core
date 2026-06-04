@@ -1,22 +1,22 @@
 import pytest
 
-from quantilica_core.exceptions import MetadataError
-from quantilica_core.manifests import DownloadManifest
-from quantilica_core.metadata import (
+from quantilica.core.exceptions import MetadataError
+from quantilica.core.manifests import DownloadManifest
+from quantilica.core.metadata import (
     Dataset,
     IngestionRun,
     MetadataCatalog,
     Resource,
     Source,
 )
-from quantilica_core.platform import (
+from quantilica.core.platform import (
     CatalogIndex,
     CatalogRepository,
     catalog_from_dict,
     download_manifest_from_dict,
     ingestion_run_from_dict,
 )
-from quantilica_core.storage import LocalStorage
+from quantilica.core.storage import LocalStorage
 
 
 def sample_catalog() -> MetadataCatalog:

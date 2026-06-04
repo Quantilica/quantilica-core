@@ -3,7 +3,7 @@
 These helpers are host-only: ``plugin.py`` modules run inside the
 ``quantilica-cli`` host, which pulls in ``rich`` via the ``cli`` extra
 (``quantilica-core[cli]``). Standalone argparse CLIs should keep using
-:func:`quantilica_core.logging.configure_cli_logging` instead.
+:func:`quantilica.core.logging.configure_cli_logging` instead.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ try:
     )
 except ModuleNotFoundError as exc:  # pragma: no cover
     raise ModuleNotFoundError(
-        "quantilica_core.cli requires the 'cli' extra; "
+        "quantilica.core.cli requires the 'cli' extra; "
         "install quantilica-core[cli]"
     ) from exc
 
@@ -99,7 +99,7 @@ def expand_years_cli(
     If ``years`` is empty and ``default_range`` is provided, it expands the default range.
     Prints a warning to the console/stderr for any invalid specs.
     """
-    from quantilica_core.dates import expand_year_range
+    from quantilica.core.dates import expand_year_range
 
     con = console or get_console()
     specs = years if years else ([default_range] if default_range else [])

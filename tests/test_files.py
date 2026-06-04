@@ -1,7 +1,7 @@
 import pytest
 
-from quantilica_core.exceptions import StorageError
-from quantilica_core.files import (
+from quantilica.core.exceptions import StorageError
+from quantilica.core.files import (
     ensure_dir,
     ensure_parent,
     is_complete_file,

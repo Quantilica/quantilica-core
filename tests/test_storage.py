@@ -2,9 +2,9 @@ from datetime import date
 
 import pytest
 
-from quantilica_core.exceptions import StorageError
-from quantilica_core.files import sha256_bytes
-from quantilica_core.storage import (
+from quantilica.core.exceptions import StorageError
+from quantilica.core.files import sha256_bytes
+from quantilica.core.storage import (
     LocalStorage,
     StampedDataRepository,
     build_stamped_filename,

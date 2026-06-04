@@ -4,7 +4,7 @@ import pytest
 
 pytest.importorskip("rich")
 
-from quantilica_core.cli import (  # noqa: E402
+from quantilica.core.cli import (  # noqa: E402
     expand_years_cli,
     get_console,
     make_batch_progress,

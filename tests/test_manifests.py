@@ -1,8 +1,8 @@
 import json
 from dataclasses import replace
 
-from quantilica_core.files import sha256_bytes
-from quantilica_core.manifests import (
+from quantilica.core.files import sha256_bytes
+from quantilica.core.manifests import (
     MANIFEST_VERSION,
     ContentFingerprint,
     DatasetManifest,

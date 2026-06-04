@@ -3,7 +3,7 @@ import logging
 
 import pytest
 
-from quantilica_core.logging import (
+from quantilica.core.logging import (
     bind_context,
     configure_cli_logging,
     get_logger,
@@ -18,13 +18,13 @@ def test_bind_context_appends_sorted_fields():
 
 
 def test_get_logger_adds_null_handler():
-    logger = get_logger("quantilica_core.tests.sample")
+    logger = get_logger("quantilica.core.tests.sample")
 
     assert any(isinstance(handler, logging.NullHandler) for handler in logger.handlers)
 
 
 def test_log_step_logs_start_and_finish(caplog):
-    logger = logging.getLogger("quantilica_core.tests.log_step")
+    logger = logging.getLogger("quantilica.core.tests.log_step")
 
     with caplog.at_level(logging.INFO, logger=logger.name):
         with log_step(logger, "download", source="ibge"):
@@ -41,7 +41,7 @@ def test_configure_cli_logging_defaults_to_info():
     try:
         assert logging.getLogger().level == logging.INFO
 
-        logger = logging.getLogger("quantilica_core.tests.cli_default")
+        logger = logging.getLogger("quantilica.core.tests.cli_default")
         logger.info("visible")
         logger.debug("hidden")
 
@@ -58,7 +58,7 @@ def test_configure_cli_logging_verbose_enables_debug():
     try:
         assert logging.getLogger().level == logging.DEBUG
 
-        logger = logging.getLogger("quantilica_core.tests.cli_verbose")
+        logger = logging.getLogger("quantilica.core.tests.cli_verbose")
         logger.debug("debug-line")
 
         assert "debug-line" in stream.getvalue()
@@ -73,7 +73,7 @@ def test_configure_cli_logging_replaces_previous_handlers():
     configure_cli_logging(stream=first)
     configure_cli_logging(stream=second)
     try:
-        logging.getLogger("quantilica_core.tests.cli_replace").info("only-second")
+        logging.getLogger("quantilica.core.tests.cli_replace").info("only-second")
 
         assert "only-second" not in first.getvalue()
         assert "only-second" in second.getvalue()
@@ -82,7 +82,7 @@ def test_configure_cli_logging_replaces_previous_handlers():
 
 
 def test_log_step_logs_failure(caplog):
-    logger = logging.getLogger("quantilica_core.tests.log_step_failure")
+    logger = logging.getLogger("quantilica.core.tests.log_step_failure")
 
     with pytest.raises(RuntimeError):
         with caplog.at_level(logging.INFO, logger=logger.name):
