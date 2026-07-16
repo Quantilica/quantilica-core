@@ -1,10 +1,10 @@
 import asyncio
 import hashlib
 import json
+from pathlib import Path
 
 import httpx
 import pytest
-
 from quantilica.core.exceptions import FetchError
 from quantilica.core.http import (
     BROWSER_HEADERS,
@@ -185,6 +185,64 @@ def test_download_with_manifest_skips_when_up_to_date(tmp_path):
 
     assert calls == ["HEAD"]
     assert not target.with_suffix(".bin.manifest.json").exists()
+
+
+def test_download_with_manifest_redownloads_when_head_fails_and_file_exists(
+    tmp_path,
+):
+    """Regression: some servers (e.g. ANP's gov.br) always 403 on HEAD, even
+    though GET works fine. A failed freshness check must not abort the
+    download just because the target already exists on disk from a previous
+    run — it should fall through and redownload via GET."""
+    payload = b"fresh-content"
+    target = tmp_path / "existing.bin"
+    target.write_bytes(b"stale-content")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "HEAD":
+            return httpx.Response(403)
+        return httpx.Response(200, content=payload)
+
+    client = HttpClient(attempts=1, transport=httpx.MockTransport(handler))
+    out = client.download_with_manifest(
+        "https://example.test/data",
+        target,
+        source_id="src",
+        dataset_id="ds",
+        producer="test",
+    )
+
+    assert out == target
+    assert target.read_bytes() == payload
+
+
+def test_async_download_with_manifest_redownloads_when_head_fails_and_file_exists(
+    tmp_path,
+):
+    payload = b"fresh-content"
+    target = tmp_path / "existing.bin"
+    target.write_bytes(b"stale-content")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "HEAD":
+            return httpx.Response(403)
+        return httpx.Response(200, content=payload)
+
+    client = AsyncHttpClient(attempts=1, transport=httpx.MockTransport(handler))
+
+    async def run() -> Path:
+        return await client.download_with_manifest(
+            "https://example.test/data",
+            target,
+            source_id="src",
+            dataset_id="ds",
+            producer="test",
+        )
+
+    out = asyncio.run(run())
+
+    assert out == target
+    assert target.read_bytes() == payload
 
 
 def test_async_download_with_manifest_streams_and_reports_progress(tmp_path):

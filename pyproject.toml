@@ -1,6 +1,6 @@
 [project]
 name = "quantilica-core"
-version = "0.3.0"
+version = "0.3.1"
 description = "Common foundation utilities for Quantilica data projects"
 readme = "README.md"
 authors = [

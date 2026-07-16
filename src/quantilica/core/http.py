@@ -354,13 +354,16 @@ class HttpClient:
         ):
             try:
                 head = self.head_or_get(url, params=params, headers=headers)
+            except FetchError as exc:
+                self.logger.debug(
+                    f"Could not check freshness for {target.name} ({exc}); "
+                    "will (re)download"
+                )
+            else:
                 if not force and target.exists():
                     if not _is_remote_more_recent(head, target, check_size=check_size):
                         self.logger.debug(f"File is up to date: {target.name}")
                         return target
-            except FetchError:
-                if not force and target.exists():
-                    raise
 
             outcome: dict[str, Any] = {}
 
@@ -720,13 +723,16 @@ class AsyncHttpClient:
         ):
             try:
                 head = await self.head_or_get(url, params=params, headers=headers)
+            except FetchError as exc:
+                self.logger.debug(
+                    f"Could not check freshness for {target.name} ({exc}); "
+                    "will (re)download"
+                )
+            else:
                 if not force and target.exists():
                     if not _is_remote_more_recent(head, target, check_size=check_size):
                         self.logger.debug(f"File is up to date: {target.name}")
                         return target
-            except FetchError:
-                if not force and target.exists():
-                    raise
 
             outcome: dict[str, Any] = {}
 
