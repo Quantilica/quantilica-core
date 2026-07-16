@@ -39,7 +39,7 @@ def exponential_delay(
     return delay
 
 
-def retry_call(
+def retry_call[T](
     func: Callable[[], T],
     *,
     attempts: int = 3,
@@ -74,7 +74,7 @@ def retry_call(
     raise RetryError(message, attempts=attempts) from last_error
 
 
-async def async_retry_call(
+async def async_retry_call[T](
     func: Callable[[], Awaitable[T]],
     *,
     attempts: int = 3,

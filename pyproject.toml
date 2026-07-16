@@ -6,7 +6,8 @@ readme = "README.md"
 authors = [
     { name = "Komesu, D.K.", email = "daniel@dkko.me" },
 ]
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 keywords = [
     "data",
@@ -18,7 +19,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
@@ -52,12 +52,16 @@ dev = [
 testpaths = ["tests"]
 addopts = ["-p", "no:cacheprovider"]
 
-[tool.hatch.build]
-sources = ["src"]
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/quantilica/core"]
+sources = ["src"]
+packages = ["src/quantilica"]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"

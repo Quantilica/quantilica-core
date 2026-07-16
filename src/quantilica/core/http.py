@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import datetime as dt
 import contextlib
+import datetime as dt
 import email.utils
 import hashlib
 import logging
@@ -204,7 +204,9 @@ class HttpClient:
                 try:
                     response.raise_for_status()
                 except httpx.HTTPStatusError as exc:
-                    raise HttpStatusError(str(response.url), response.status_code) from exc
+                    raise HttpStatusError(
+                        str(response.url), response.status_code
+                    ) from exc
                 return response
 
     def head_metadata(
@@ -583,7 +585,9 @@ class AsyncHttpClient:
                 try:
                     response.raise_for_status()
                 except httpx.HTTPStatusError as exc:
-                    raise HttpStatusError(str(response.url), response.status_code) from exc
+                    raise HttpStatusError(
+                        str(response.url), response.status_code
+                    ) from exc
                 return response
 
     async def head_metadata(

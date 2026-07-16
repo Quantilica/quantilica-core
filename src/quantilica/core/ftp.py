@@ -93,9 +93,7 @@ class MonitoredFTP(ftplib.FTP):
             with contextlib.suppress(OSError):
                 conn.shutdown(_socket.SHUT_RDWR)
 
-    def retrbinary(
-        self, cmd: str, callback, blocksize: int = 8192, rest=None
-    ) -> str:
+    def retrbinary(self, cmd: str, callback, blocksize: int = 8192, rest=None) -> str:
         """Como ``FTP.retrbinary``, mas com watchdog de idle-timeout."""
         last_chunk = [time.monotonic()]
         stop_event = threading.Event()
@@ -215,6 +213,7 @@ class FtpClient:
             def _attempt() -> None:
                 with self._open() as ftp:
                     try:
+
                         def _stream(cb: Callable[[bytes], None]) -> None:
                             def _tracked(data: bytes) -> None:
                                 cb(data)

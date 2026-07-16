@@ -5,6 +5,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+
 from quantilica.core.exceptions import FetchError
 from quantilica.core.http import (
     BROWSER_HEADERS,
@@ -154,8 +155,7 @@ def test_download_with_manifest_invokes_progress(tmp_path):
     assert progressed[-1][0] == len(payload)
     # Monotonically increasing downloaded counter
     assert all(
-        progressed[i][0] <= progressed[i + 1][0]
-        for i in range(len(progressed) - 1)
+        progressed[i][0] <= progressed[i + 1][0] for i in range(len(progressed) - 1)
     )
 
 
@@ -280,9 +280,9 @@ def test_head_last_modified_date_returns_date():
     client = HttpClient(attempts=1, transport=httpx.MockTransport(handler))
 
     # _DEFAULT_LAST_MODIFIED == "Wed, 21 Oct 2026 07:28:00 GMT"
-    assert client.head_last_modified_date(
-        "https://example.test/data"
-    ) == date(2026, 10, 21)
+    assert client.head_last_modified_date("https://example.test/data") == date(
+        2026, 10, 21
+    )
 
 
 def test_head_last_modified_date_none_on_failure():

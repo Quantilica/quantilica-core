@@ -13,9 +13,7 @@ from quantilica.core.storage import (
 
 
 def test_build_stamped_filename_joins_parts_and_stamps():
-    name = build_stamped_filename(
-        "exp", 2024, ext="csv", timestamp=date(2024, 3, 15)
-    )
+    name = build_stamped_filename("exp", 2024, ext="csv", timestamp=date(2024, 3, 15))
 
     assert name == "exp_2024@20240315.csv"
 

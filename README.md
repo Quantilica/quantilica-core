@@ -7,21 +7,21 @@ Biblioteca de utilitários domain-neutral que serve como base para todos os cole
 ## Instalação
 
 ```bash
-pip install "quantilica-core @ git+https://github.com/Quantilica/quantilica-core.git"
+pip install quantilica-core
 ```
 
 Com uv:
 
 ```bash
-uv add "quantilica-core @ git+https://github.com/Quantilica/quantilica-core.git"
+uv add quantilica-core
 ```
 
 ## Uso Rápido
 
 ```python
-from quantilica_core.http import HttpClient
-from quantilica_core.storage import LocalStorage
-from quantilica_core.manifests import DownloadManifest
+from quantilica.core.http import HttpClient
+from quantilica.core.storage import LocalStorage
+from quantilica.core.manifests import DownloadManifest
 
 # Cliente HTTP com retry automático
 client = HttpClient(attempts=3)

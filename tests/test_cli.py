@@ -42,6 +42,6 @@ def test_expand_years_cli():
     assert expand_years_cli(["2020:2022", "2024"]) == [2020, 2021, 2022, 2024]
     # Test default range when input is None/empty
     assert expand_years_cli(None, default_range="2018:2020") == [2018, 2019, 2020]
-    # Test with invalid year (should print warning and skip it, returning only the valid one)
+    # Test with invalid year (should print warning and skip it, returning only
+    # the valid one)
     assert expand_years_cli(["2020", "invalid", "2022"]) == [2020, 2022]
-

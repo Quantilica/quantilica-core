@@ -26,8 +26,7 @@ try:
     )
 except ModuleNotFoundError as exc:  # pragma: no cover
     raise ModuleNotFoundError(
-        "quantilica.core.cli requires the 'cli' extra; "
-        "install quantilica-core[cli]"
+        "quantilica.core.cli requires the 'cli' extra; install quantilica-core[cli]"
     ) from exc
 
 
@@ -56,9 +55,7 @@ def setup_rich_logging(
         level=level,
         format="%(message)s",
         datefmt="[%X]",
-        handlers=[
-            RichHandler(console=console or get_console(), show_path=False)
-        ],
+        handlers=[RichHandler(console=console or get_console(), show_path=False)],
         force=True,
     )
 
@@ -96,8 +93,8 @@ def expand_years_cli(
 ) -> list[int]:
     """Expand CLI year/range arguments (e.g. ``["2020:2022", "2024"]``).
 
-    If ``years`` is empty and ``default_range`` is provided, it expands the default range.
-    Prints a warning to the console/stderr for any invalid specs.
+    If ``years`` is empty and ``default_range`` is provided, it expands the
+    default range. Prints a warning to the console/stderr for any invalid specs.
     """
     from quantilica.core.dates import expand_year_range
 
@@ -110,4 +107,3 @@ def expand_years_cli(
         except ValueError:
             con.print(f"[yellow]Aviso:[/yellow] ano/intervalo inválido '{arg}'")
     return result
-
