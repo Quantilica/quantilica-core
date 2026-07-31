@@ -194,7 +194,7 @@ def test_download_with_manifest_redownloads_when_head_fails_and_file_exists(
     though GET works fine. A failed freshness check must not abort the
     download just because the target already exists on disk from a previous
     run — it should fall through and redownload via GET."""
-    payload = b"fresh-content"
+    payload = b"fresh-content-updated"
     target = tmp_path / "existing.bin"
     target.write_bytes(b"stale-content")
 
@@ -219,7 +219,7 @@ def test_download_with_manifest_redownloads_when_head_fails_and_file_exists(
 def test_async_download_with_manifest_redownloads_when_head_fails_and_file_exists(
     tmp_path,
 ):
-    payload = b"fresh-content"
+    payload = b"fresh-content-updated"
     target = tmp_path / "existing.bin"
     target.write_bytes(b"stale-content")
 

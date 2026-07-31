@@ -181,14 +181,14 @@ class HttpClient:
         """Perform a HEAD request, falling back to GET with streaming if unsupported.
 
         Some servers don't support HEAD requests (e.g. return 405 Method Not
-        Allowed). This method tries HEAD first, and if it fails with 405 or
+        Allowed). This method tries HEAD first, and if it fails with 403, 405 or
         501, opens a GET with streaming, reads only headers, and closes the
         connection without downloading the body.
         """
         try:
             return self.head(url, params=params, headers=headers)
         except HttpStatusError as e:
-            if e.status_code not in (405, 501):
+            if e.status_code not in (403, 405, 501):
                 raise
         request_headers = dict(self.headers)
         if headers:
@@ -269,7 +269,7 @@ class HttpClient:
         returns ``None`` (handy for building stamped filenames).
         """
         try:
-            meta = self.head_metadata(url, params=params, headers=headers)
+            meta = self.head_metadata_or_get(url, params=params, headers=headers)
         except Exception as exc:
             self.logger.warning(f"Could not fetch metadata for {url}: {exc}")
             return None
@@ -563,13 +563,13 @@ class AsyncHttpClient:
         """Perform a HEAD request, falling back to GET with streaming if unsupported.
 
         Some servers don't support HEAD requests. This method tries HEAD first,
-        and if it fails with 405 or 501, opens a GET with streaming, reads only
+        and if it fails with 403, 405 or 501, opens a GET with streaming, reads only
         headers, and closes the connection without downloading the body.
         """
         try:
             return await self.head(url, params=params, headers=headers)
         except HttpStatusError as e:
-            if e.status_code not in (405, 501):
+            if e.status_code not in (403, 405, 501):
                 raise
         request_headers = dict(self.headers)
         if headers:
@@ -644,7 +644,7 @@ class AsyncHttpClient:
     ) -> dt.date | None:
         """Async version of :meth:`HttpClient.head_last_modified_date`."""
         try:
-            meta = await self.head_metadata(url, params=params, headers=headers)
+            meta = await self.head_metadata_or_get(url, params=params, headers=headers)
         except Exception as exc:
             self.logger.warning(f"Could not fetch metadata for {url}: {exc}")
             return None
