@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -12,6 +13,30 @@ from typing import BinaryIO
 from .exceptions import StorageError
 
 DEFAULT_CHUNK_SIZE = 1024 * 1024
+DEFAULT_MIN_FREE_MARGIN = 100 * 1024 * 1024  # 100 MB
+
+
+def check_free_space(
+    path: str | os.PathLike[str],
+    required_bytes: int = 0,
+    *,
+    margin_bytes: int = DEFAULT_MIN_FREE_MARGIN,
+) -> bool:
+    """Return ``True`` if the filesystem at ``path`` has sufficient free space.
+
+    Args:
+        path: Path or directory on the target filesystem.
+        required_bytes: Number of bytes expected to be written.
+        margin_bytes: Additional free space buffer (defaults to 100 MB).
+    """
+    target = Path(path).expanduser()
+    dir_path = target if target.is_dir() or not target.suffix else target.parent
+    dir_path.mkdir(parents=True, exist_ok=True)
+    try:
+        usage = shutil.disk_usage(dir_path)
+        return usage.free >= (required_bytes + margin_bytes)
+    except OSError:
+        return True
 
 
 def ensure_dir(path: str | os.PathLike[str]) -> Path:

@@ -2,6 +2,7 @@ import pytest
 
 from quantilica.core.exceptions import StorageError
 from quantilica.core.files import (
+    check_free_space,
     ensure_dir,
     ensure_parent,
     is_complete_file,
@@ -72,3 +73,8 @@ def test_write_text_atomic_writes_text(tmp_path):
 def test_sha256_file_raises_storage_error_for_missing_file(tmp_path):
     with pytest.raises(StorageError):
         sha256_file(tmp_path / "missing.bin")
+
+
+def test_check_free_space(tmp_path):
+    assert check_free_space(tmp_path, required_bytes=100) is True
+    assert check_free_space(tmp_path, required_bytes=10**18) is False

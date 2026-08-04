@@ -17,7 +17,7 @@ from typing import Any
 import httpx
 
 from .exceptions import FetchError, StorageError
-from .files import ensure_parent, write_bytes_atomic
+from .files import check_free_space, ensure_parent, write_bytes_atomic
 from .logging import bind_context, get_logger, log_step
 from .manifests import DownloadManifest
 from .retry import async_retry_call, retry_call
@@ -378,7 +378,15 @@ class HttpClient:
                     "GET", url, params=params, headers=headers
                 ) as response:
                     total = int(response.headers.get("Content-Length", 0) or 0)
+                    if not check_free_space(target, required_bytes=total):
+                        req_mb = total / (1024 * 1024)
+                        raise StorageError(
+                            f"Insufficient disk space to download {target.name} "
+                            f"to {target.parent} (required: {req_mb:.1f} MB)"
+                        )
+
                     outcome["last_modified"] = response.headers.get("Last-Modified")
+
                     outcome["final_url"] = str(response.url)
 
                     fd, temp_path = _open_atomic_temp(target)
