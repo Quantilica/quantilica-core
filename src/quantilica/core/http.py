@@ -282,9 +282,32 @@ class HttpClient:
         *,
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
+        progress: ProgressCallback | None = None,
     ) -> bytes:
         """Fetch a URL and return response bytes."""
-        return self.get(url, params=params, headers=headers).content
+        if progress is None:
+            return self.get(url, params=params, headers=headers).content
+
+        def _stream_attempt() -> bytes:
+            if progress is not None:
+                progress(0, 0)
+            downloaded = 0
+            chunks = []
+            with self.stream("GET", url, params=params, headers=headers) as response:
+                total = int(response.headers.get("Content-Length", 0) or 0)
+                for chunk in response.iter_bytes(chunk_size=DEFAULT_STREAM_CHUNK_SIZE):
+                    chunks.append(chunk)
+                    downloaded += len(chunk)
+                    if progress is not None:
+                        progress(downloaded, total)
+            return b"".join(chunks)
+
+        return retry_call(
+            _stream_attempt,
+            attempts=self.attempts,
+            base_delay=self.retry_base_delay,
+            retry_exceptions=DEFAULT_RETRY_EXCEPTIONS,
+        )
 
     def get_text(
         self,
@@ -293,12 +316,19 @@ class HttpClient:
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
         encoding: str | None = None,
+        progress: ProgressCallback | None = None,
     ) -> str:
         """Fetch a URL and return response text."""
-        response = self.get(url, params=params, headers=headers)
-        if encoding:
-            response.encoding = encoding
-        return response.text
+        if progress is None:
+            response = self.get(url, params=params, headers=headers)
+            if encoding:
+                response.encoding = encoding
+            return response.text
+
+        raw_bytes = self.get_bytes(
+            url, params=params, headers=headers, progress=progress
+        )
+        return raw_bytes.decode(encoding or "utf-8")
 
     def get_json(
         self,
@@ -306,13 +336,25 @@ class HttpClient:
         *,
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
+        progress: ProgressCallback | None = None,
     ) -> Any:
         """Fetch a URL and parse JSON."""
-        response = self.get(url, params=params, headers=headers)
+        if progress is None:
+            response = self.get(url, params=params, headers=headers)
+            try:
+                return response.json()
+            except ValueError as exc:
+                raise FetchError(f"Invalid JSON while fetching {response.url}") from exc
+
+        import json
+
+        raw_bytes = self.get_bytes(
+            url, params=params, headers=headers, progress=progress
+        )
         try:
-            return response.json()
+            return json.loads(raw_bytes)
         except ValueError as exc:
-            raise FetchError(f"Invalid JSON while fetching {response.url}") from exc
+            raise FetchError(f"Invalid JSON while fetching {url}") from exc
 
     def download(
         self,
