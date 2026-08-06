@@ -195,21 +195,30 @@ class HttpClient:
         request_headers = dict(self.headers)
         if headers:
             request_headers.update(headers)
-        with httpx.Client(
-            timeout=self.timeout,
-            follow_redirects=self.follow_redirects,
-            headers=request_headers,
-            verify=self.verify,
-            transport=self.transport,
-        ) as client:
-            with client.stream("GET", url, params=params) as response:
-                try:
-                    response.raise_for_status()
-                except httpx.HTTPStatusError as exc:
-                    raise HttpStatusError(
-                        str(response.url), response.status_code
-                    ) from exc
-                return response
+
+        def _stream_fallback() -> httpx.Response:
+            with httpx.Client(
+                timeout=self.timeout,
+                follow_redirects=self.follow_redirects,
+                headers=request_headers,
+                verify=self.verify,
+                transport=self.transport,
+            ) as client:
+                with client.stream("GET", url, params=params) as response:
+                    try:
+                        response.raise_for_status()
+                    except httpx.HTTPStatusError as exc:
+                        raise HttpStatusError(
+                            str(response.url), response.status_code
+                        ) from exc
+                    return response
+
+        return retry_call(
+            _stream_fallback,
+            attempts=self.attempts,
+            base_delay=self.retry_base_delay,
+            retry_exceptions=DEFAULT_RETRY_EXCEPTIONS,
+        )
 
     def head_metadata(
         self,
@@ -396,7 +405,11 @@ class HttpClient:
         """
         target = Path(target_path)
         with log_step(
-            self.logger, "download-with-manifest", url=url, target=target.name
+            self.logger,
+            "download-with-manifest",
+            url=url,
+            target=target.name,
+            expected_exceptions=(HttpStatusError,),
         ):
             try:
                 head = self.head_or_get(url, params=params, headers=headers)
@@ -626,21 +639,30 @@ class AsyncHttpClient:
         request_headers = dict(self.headers)
         if headers:
             request_headers.update(headers)
-        async with httpx.AsyncClient(
-            timeout=self.timeout,
-            follow_redirects=self.follow_redirects,
-            headers=request_headers,
-            verify=self.verify,
-            transport=self.transport,
-        ) as client:
-            async with client.stream("GET", url, params=params) as response:
-                try:
-                    response.raise_for_status()
-                except httpx.HTTPStatusError as exc:
-                    raise HttpStatusError(
-                        str(response.url), response.status_code
-                    ) from exc
-                return response
+
+        async def _stream_fallback() -> httpx.Response:
+            async with httpx.AsyncClient(
+                timeout=self.timeout,
+                follow_redirects=self.follow_redirects,
+                headers=request_headers,
+                verify=self.verify,
+                transport=self.transport,
+            ) as client:
+                async with client.stream("GET", url, params=params) as response:
+                    try:
+                        response.raise_for_status()
+                    except httpx.HTTPStatusError as exc:
+                        raise HttpStatusError(
+                            str(response.url), response.status_code
+                        ) from exc
+                    return response
+
+        return await async_retry_call(
+            _stream_fallback,
+            attempts=self.attempts,
+            base_delay=self.retry_base_delay,
+            retry_exceptions=DEFAULT_RETRY_EXCEPTIONS,
+        )
 
     async def head_metadata(
         self,
@@ -775,7 +797,11 @@ class AsyncHttpClient:
         """
         target = Path(target_path)
         with log_step(
-            self.logger, "download-with-manifest-async", url=url, target=target.name
+            self.logger,
+            "download-with-manifest-async",
+            url=url,
+            target=target.name,
+            expected_exceptions=(HttpStatusError,),
         ):
             try:
                 head = await self.head_or_get(url, params=params, headers=headers)

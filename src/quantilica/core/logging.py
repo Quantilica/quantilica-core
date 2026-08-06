@@ -70,6 +70,7 @@ def log_step(
     step: str,
     *,
     level: int = logging.INFO,
+    expected_exceptions: tuple[type[Exception], ...] = (),
     **context: object,
 ) -> Iterator[None]:
     """Log start/end/failure messages around a block."""
@@ -77,11 +78,13 @@ def log_step(
     logger.log(level, bind_context(f"Starting {step}", **context))
     try:
         yield
-    except Exception:
+    except Exception as exc:
         elapsed = time.perf_counter() - start
-        logger.exception(
-            bind_context(f"Failed {step}", elapsed=f"{elapsed:.3f}s", **context)
-        )
+        msg = bind_context(f"Failed {step}", elapsed=f"{elapsed:.3f}s", **context)
+        if expected_exceptions and isinstance(exc, expected_exceptions):
+            logger.error(msg)
+        else:
+            logger.exception(msg)
         raise
     elapsed = time.perf_counter() - start
     logger.log(
