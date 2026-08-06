@@ -69,6 +69,8 @@ DEFAULT_RETRY_EXCEPTIONS = (
     httpx.NetworkError,
     httpx.RemoteProtocolError,
     RetryableHttpStatusError,
+    ConnectionError,
+    TimeoutError,
 )
 
 
