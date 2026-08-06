@@ -8,7 +8,11 @@ These helpers are host-only: ``plugin.py`` modules run inside the
 
 from __future__ import annotations
 
+import concurrent.futures
+import contextlib
 import logging
+import threading
+from collections.abc import Callable, Generator
 
 try:
     from rich.console import Console
@@ -107,3 +111,56 @@ def expand_years_cli(
         except ValueError:
             con.print(f"[yellow]Aviso:[/yellow] ano/intervalo inválido '{arg}'")
     return result
+
+
+class ProgressPool:
+    """Manages a fixed pool of rich progress bars for concurrent workers."""
+
+    def __init__(self, workers: int, file_prog: Progress):
+        self.lock = threading.Lock()
+        self.file_prog = file_prog
+        self.available = [
+            file_prog.add_task("[dim]Inativo[/dim]", total=1) for _ in range(workers)
+        ]
+
+    @contextlib.contextmanager
+    def acquire(
+        self, description: str
+    ) -> Generator[Callable[[int, int], None], None, None]:
+        with self.lock:
+            task_id = self.available.pop(0)
+        self.file_prog.update(task_id, description=description, completed=0, total=None)
+
+        def update_cb(downloaded: int, total: int) -> None:
+            if downloaded == 0 and total == 0:
+                self.file_prog.update(task_id, completed=0)
+                return
+            self.file_prog.update(task_id, completed=downloaded, total=total or None)
+
+        try:
+            yield update_cb
+        finally:
+            with self.lock:
+                self.file_prog.update(
+                    task_id,
+                    description="[dim]Inativo[/dim]",
+                    completed=0,
+                    total=1,
+                )
+                self.available.append(task_id)
+
+
+@contextlib.contextmanager
+def graceful_executor(
+    max_workers: int,
+) -> Generator[concurrent.futures.ThreadPoolExecutor, None, None]:
+    """ThreadPoolExecutor that cancels futures and shuts down on KeyboardInterrupt."""
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+    # Python 3.9+ supports cancel_futures=True, which automatically
+    # cancels pending futures during shutdown.
+    try:
+        yield executor
+        executor.shutdown(wait=True)
+    except KeyboardInterrupt:
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
