@@ -31,12 +31,6 @@ dependencies = [
     "tqdm>=4.67.1",
 ]
 
-[project.optional-dependencies]
-cli = [
-    "rich>=13.0.0",
-    "typer>=0.15.0",
-]
-
 [project.urls]
 Homepage = "https://github.com/Quantilica/quantilica-core"
 Repository = "https://github.com/Quantilica/quantilica-core"
