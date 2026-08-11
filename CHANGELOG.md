@@ -5,6 +5,15 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.5.0] - 2026-08-10
+
+### Adicionado
+- Extensão de suporte para cliente de FTP via `FtpClient`.
+- Inclusão do parâmetro `data` no método `request` do `HttpClient` e expansão geral das assinaturas.
+
+## [0.4.0] - 2026-08-07
+*(Release de remoção do catálogo/CLI do core)*
+
 ## [0.3.2] - 2026-07-30
 
 ### Corrigido
