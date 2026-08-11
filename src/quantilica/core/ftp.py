@@ -180,7 +180,7 @@ class FtpClient:
 
     def download_with_manifest(
         self,
-        remote_path: str,
+        url: str,
         target_path: str | Path,
         *,
         source_id: str,
@@ -188,19 +188,19 @@ class FtpClient:
         producer: str,
         force: bool = False,
         metadata: dict[str, Any] | None = None,
-        progress_callback: Callable[[int], None] | None = None,
+        progress: Callable[[int], None] | None = None,
     ) -> Path:
         """Download a file from FTP; freshness check, streaming write, and manifest."""
         target = Path(target_path)
         ensure_parent(target)
         with log_step(
-            self.logger, "ftp-download-with-manifest", host=self.host, path=remote_path
+            self.logger, "ftp-download-with-manifest", host=self.host, path=url
         ):
             # Freshness probe — any failure falls through to download.
             if not force and target.exists():
                 with contextlib.suppress(Exception):
                     with self._open() as ftp:
-                        mtime_str = ftp.sendcmd(f"MDTM {remote_path}").split()[1]
+                        mtime_str = ftp.sendcmd(f"MDTM {url}").split()[1]
                         remote_mtime = time.mktime(
                             time.strptime(mtime_str, "%Y%m%d%H%M%S")
                         )
@@ -217,19 +217,17 @@ class FtpClient:
                         def _stream(cb: Callable[[bytes], None]) -> None:
                             def _tracked(data: bytes) -> None:
                                 cb(data)
-                                if progress_callback is not None:
-                                    progress_callback(len(data))
+                                if progress is not None:
+                                    progress(len(data))
 
-                            ftp.retrbinary(f"RETR {remote_path}", _tracked)
+                            ftp.retrbinary(f"RETR {url}", _tracked)
 
                         sha256, size_bytes = write_stream_atomic(target, _stream)
                     except ftplib.error_perm as exc:
-                        raise FetchError(f"FTP file not found: {remote_path}") from exc
+                        raise FetchError(f"FTP file not found: {url}") from exc
                     outcome.update(sha256=sha256, size_bytes=size_bytes)
                     with contextlib.suppress(Exception):
-                        outcome["mtime_str"] = ftp.sendcmd(
-                            f"MDTM {remote_path}"
-                        ).split()[1]
+                        outcome["mtime_str"] = ftp.sendcmd(f"MDTM {url}").split()[1]
 
             self._retry(_attempt)
 
@@ -241,7 +239,7 @@ class FtpClient:
             manifest = DownloadManifest.from_digest(
                 source_id=source_id,
                 dataset_id=dataset_id,
-                url=f"ftp://{self.host}/{remote_path}",
+                url=f"ftp://{self.host}/{url}" if not url.startswith("ftp://") else url,
                 sha256=outcome["sha256"],
                 size_bytes=outcome["size_bytes"],
                 path=str(target.absolute()),

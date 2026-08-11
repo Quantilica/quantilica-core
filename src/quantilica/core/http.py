@@ -88,6 +88,7 @@ class HttpClient:
         verify: bool = True,
         transport: httpx.BaseTransport | None = None,
         logger: logging.Logger | None = None,
+        cookies: httpx.Cookies | None = None,
     ) -> None:
         default_headers = {"User-Agent": DEFAULT_USER_AGENT}
         if headers:
@@ -100,6 +101,7 @@ class HttpClient:
         self.verify = verify
         self.transport = transport
         self.logger = logger or get_logger(__name__)
+        self.cookies = cookies or httpx.Cookies()
 
     def request(
         self,
@@ -108,6 +110,7 @@ class HttpClient:
         *,
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
+        data: Any | None = None,
         content: bytes | None = None,
         json: Any | None = None,
     ) -> httpx.Response:
@@ -124,10 +127,12 @@ class HttpClient:
                 headers=request_headers,
                 verify=self.verify,
                 transport=self.transport,
+                cookies=self.cookies,
             ) as client:
                 response = client.request(
-                    method, url, params=params, content=content, json=json
+                    method, url, params=params, data=data, content=content, json=json
                 )
+                self.cookies.update(response.cookies)
             elapsed = time.perf_counter() - start
             self.logger.debug(
                 bind_context(
@@ -203,8 +208,10 @@ class HttpClient:
                 headers=request_headers,
                 verify=self.verify,
                 transport=self.transport,
+                cookies=self.cookies,
             ) as client:
                 with client.stream("GET", url, params=params) as response:
+                    self.cookies.update(response.cookies)
                     try:
                         response.raise_for_status()
                     except httpx.HTTPStatusError as exc:
@@ -498,6 +505,7 @@ class HttpClient:
         *,
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
+        data: Any | None = None,
     ):
         """Open a streaming HTTP request."""
         request_headers = dict(self.headers)
@@ -509,8 +517,10 @@ class HttpClient:
             headers=request_headers,
             verify=self.verify,
             transport=self.transport,
+            cookies=self.cookies,
         ) as client:
-            with client.stream(method, url, params=params) as response:
+            with client.stream(method, url, params=params, data=data) as response:
+                self.cookies.update(response.cookies)
                 try:
                     response.raise_for_status()
                 except httpx.HTTPStatusError as exc:
@@ -533,6 +543,7 @@ class AsyncHttpClient:
         verify: bool = True,
         transport: httpx.AsyncBaseTransport | None = None,
         logger: logging.Logger | None = None,
+        cookies: httpx.Cookies | None = None,
     ) -> None:
         default_headers = {"User-Agent": DEFAULT_USER_AGENT}
         if headers:
@@ -545,6 +556,7 @@ class AsyncHttpClient:
         self.verify = verify
         self.transport = transport
         self.logger = logger or get_logger(__name__)
+        self.cookies = cookies or httpx.Cookies()
 
     async def request(
         self,
@@ -553,6 +565,7 @@ class AsyncHttpClient:
         *,
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
+        data: Any | None = None,
         content: bytes | None = None,
         json: Any | None = None,
     ) -> httpx.Response:
@@ -569,10 +582,12 @@ class AsyncHttpClient:
                 headers=request_headers,
                 verify=self.verify,
                 transport=self.transport,
+                cookies=self.cookies,
             ) as client:
                 response = await client.request(
-                    method, url, params=params, content=content, json=json
+                    method, url, params=params, data=data, content=content, json=json
                 )
+                self.cookies.update(response.cookies)
             elapsed = time.perf_counter() - start
             self.logger.debug(
                 bind_context(
@@ -647,8 +662,10 @@ class AsyncHttpClient:
                 headers=request_headers,
                 verify=self.verify,
                 transport=self.transport,
+                cookies=self.cookies,
             ) as client:
                 async with client.stream("GET", url, params=params) as response:
+                    self.cookies.update(response.cookies)
                     try:
                         response.raise_for_status()
                     except httpx.HTTPStatusError as exc:
@@ -884,6 +901,7 @@ class AsyncHttpClient:
         *,
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
+        data: Any | None = None,
     ) -> AsyncGenerator[httpx.Response, None]:
         """Open a streaming HTTP request asynchronously."""
         request_headers = dict(self.headers)
