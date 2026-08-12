@@ -19,6 +19,12 @@ class RetryError(QuantilicaError):
     """Raised when a retry policy exhausts all attempts."""
 
     def __init__(self, message: str, *, attempts: int) -> None:
+        """Initialize the RetryError.
+
+        Args:
+            message: The error message.
+            attempts: The number of attempts made before failing.
+        """
         super().__init__(message)
         self.attempts = attempts
 
@@ -30,7 +36,20 @@ def exponential_delay(
     max_delay: float = 60.0,
     jitter: float = 0.0,
 ) -> float:
-    """Return the delay for a one-based retry attempt number."""
+    """Return the delay for a one-based retry attempt number.
+
+    Args:
+        attempt: The current attempt number (1-based).
+        base_delay: The base delay in seconds.
+        max_delay: The maximum delay in seconds.
+        jitter: The maximum jitter to add to the delay.
+
+    Returns:
+        float: The calculated delay in seconds.
+
+    Raises:
+        ValueError: If attempt is less than 1.
+    """
     if attempt < 1:
         raise ValueError("attempt must be >= 1")
     delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
@@ -49,7 +68,24 @@ def retry_call[T](
     retry_exceptions: tuple[type[BaseException], ...] = (Exception,),
     sleep: Callable[[float], None] = time.sleep,
 ) -> T:
-    """Call a function using retry with exponential backoff."""
+    """Call a function using retry with exponential backoff.
+
+    Args:
+        func: The function to call.
+        attempts: Maximum number of attempts.
+        base_delay: Base delay between attempts.
+        max_delay: Maximum delay between attempts.
+        jitter: Maximum jitter to add.
+        retry_exceptions: Tuple of exceptions to catch and retry.
+        sleep: Function to use for sleeping.
+
+    Returns:
+        T: The return value of the function.
+
+    Raises:
+        ValueError: If attempts is less than 1.
+        RetryError: If all attempts fail.
+    """
     if attempts < 1:
         raise ValueError("attempts must be >= 1")
 
@@ -84,7 +120,24 @@ async def async_retry_call[T](
     retry_exceptions: tuple[type[BaseException], ...] = (Exception,),
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> T:
-    """Call an async function using retry with exponential backoff."""
+    """Call an async function using retry with exponential backoff.
+
+    Args:
+        func: The async function to call.
+        attempts: Maximum number of attempts.
+        base_delay: Base delay between attempts.
+        max_delay: Maximum delay between attempts.
+        jitter: Maximum jitter to add.
+        retry_exceptions: Tuple of exceptions to catch and retry.
+        sleep: Async function to use for sleeping.
+
+    Returns:
+        T: The return value of the function.
+
+    Raises:
+        ValueError: If attempts is less than 1.
+        RetryError: If all attempts fail.
+    """
     if attempts < 1:
         raise ValueError("attempts must be >= 1")
 
@@ -117,7 +170,18 @@ def with_retry(
     jitter: float = 0.0,
     retry_exceptions: tuple[type[BaseException], ...] = (Exception,),
 ) -> Callable[[Callable[P, T]], Callable[P, T]]:
-    """Decorate a function with retry behavior."""
+    """Decorate a function with retry behavior.
+
+    Args:
+        attempts: Maximum number of attempts.
+        base_delay: Base delay between attempts.
+        max_delay: Maximum delay between attempts.
+        jitter: Maximum jitter to add.
+        retry_exceptions: Tuple of exceptions to catch and retry.
+
+    Returns:
+        Callable[[Callable[P, T]], Callable[P, T]]: The decorator function.
+    """
 
     def decorator(func: Callable[P, T]) -> Callable[P, T]:
         @wraps(func)
@@ -144,7 +208,18 @@ def with_async_retry(
     jitter: float = 0.0,
     retry_exceptions: tuple[type[BaseException], ...] = (Exception,),
 ) -> Callable[[Callable[P, Awaitable[T]]], Callable[P, Awaitable[T]]]:
-    """Decorate an async function with retry behavior."""
+    """Decorate an async function with retry behavior.
+
+    Args:
+        attempts: Maximum number of attempts.
+        base_delay: Base delay between attempts.
+        max_delay: Maximum delay between attempts.
+        jitter: Maximum jitter to add.
+        retry_exceptions: Tuple of exceptions to catch and retry.
+
+    Returns:
+        Callable[[Callable[P, Awaitable[T]]], Callable[P, Awaitable[T]]]: The decorator.
+    """
 
     def decorator(func: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]]:
         @wraps(func)

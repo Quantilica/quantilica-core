@@ -4,6 +4,7 @@
 
 Biblioteca de utilitários domain-neutral que serve como base para todos os coletores e pipelines Quantilica. Centraliza rede resiliente, armazenamento atômico, proveniência de dados e logging estruturado — permitindo que cada pacote de domínio foque exclusivamente na lógica de sua fonte de dados.
 
+Para a documentação completa, consulte [https://docs.quantilica.com](https://docs.quantilica.com).
 ## Instalação
 
 ```bash

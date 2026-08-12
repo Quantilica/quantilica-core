@@ -24,18 +24,47 @@ class EnvSettings:
         return f"{self.prefix}{name}".upper()
 
     def get(self, name: str, default: str | None = None) -> str | None:
-        """Return a setting value or a default."""
+        """Return a setting value or a default.
+
+        Args:
+            name: The name of the setting.
+            default: The default value to return if not found.
+
+        Returns:
+            str | None: The setting value or default.
+        """
         return self._source().get(self._key(name), default)
 
     def require(self, name: str) -> str:
-        """Return a setting value or raise ConfigError."""
+        """Return a setting value or raise ConfigError.
+
+        Args:
+            name: The name of the setting.
+
+        Returns:
+            str: The setting value.
+
+        Raises:
+            ConfigError: If the setting is missing or empty.
+        """
         value = self.get(name)
         if value is None or value == "":
             raise ConfigError(f"Missing required setting: {self._key(name)}")
         return value
 
     def get_bool(self, name: str, default: bool = False) -> bool:
-        """Return a boolean setting."""
+        """Return a boolean setting.
+
+        Args:
+            name: The name of the setting.
+            default: The default value if not found.
+
+        Returns:
+            bool: The boolean setting value.
+
+        Raises:
+            ConfigError: If the setting cannot be parsed as a boolean.
+        """
         value = self.get(name)
         if value is None:
             return default
@@ -47,7 +76,18 @@ class EnvSettings:
         raise ConfigError(f"Invalid boolean setting: {self._key(name)}={value!r}")
 
     def get_int(self, name: str, default: int | None = None) -> int | None:
-        """Return an integer setting."""
+        """Return an integer setting.
+
+        Args:
+            name: The name of the setting.
+            default: The default value if not found.
+
+        Returns:
+            int | None: The integer setting value or default.
+
+        Raises:
+            ConfigError: If the setting cannot be parsed as an integer.
+        """
         value = self.get(name)
         if value is None:
             return default
@@ -58,7 +98,15 @@ class EnvSettings:
             raise ConfigError(message) from exc
 
     def path(self, name: str, default: str | Path | None = None) -> Path | None:
-        """Return a setting as an expanded Path."""
+        """Return a setting as an expanded Path.
+
+        Args:
+            name: The name of the setting.
+            default: The default path if not found.
+
+        Returns:
+            Path | None: The expanded Path or default.
+        """
         value = self.get(name)
         if value is None:
             if default is None:
@@ -76,6 +124,13 @@ def load_dotenv(
 
     This parser intentionally supports only ``KEY=VALUE`` lines, comments, and
     optional single or double quotes. It returns the number of variables loaded.
+
+    Args:
+        path: Path to the dotenv file.
+        override: Whether to override existing environment variables.
+
+    Returns:
+        int: The number of variables successfully loaded.
     """
     dotenv_path = Path(path).expanduser()
     if not dotenv_path.exists():

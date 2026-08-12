@@ -42,7 +42,25 @@ def ftp_connect(
     max_delay: float = 30.0,
     jitter: float = 1.0,
 ) -> ftplib.FTP:
-    """Open an FTP connection with exponential backoff retry."""
+    """Open an FTP connection with exponential backoff retry.
+
+    Args:
+        host: The FTP host.
+        user: The FTP user.
+        passwd: The FTP password.
+        encoding: The encoding to use.
+        timeout: The timeout in seconds.
+        attempts: Number of attempts.
+        base_delay: Base delay for retry.
+        max_delay: Maximum delay for retry.
+        jitter: Jitter for retry.
+
+    Returns:
+        ftplib.FTP: The connected FTP object.
+
+    Raises:
+        FetchError: If the connection fails after all attempts.
+    """
     last_exc: BaseException | None = None
     for attempt in range(1, attempts + 1):
         try:
@@ -87,14 +105,28 @@ class MonitoredFTP(ftplib.FTP):
         return result
 
     def interrupt_transfer(self) -> None:
-        """Fecha o data socket para interromper um ``retrbinary()`` em andamento."""
+        """Fecha o data socket para interromper um ``retrbinary()`` em andamento.
+
+        Returns:
+            None
+        """
         conn = self._data_conn
         if conn is not None:
             with contextlib.suppress(OSError):
                 conn.shutdown(_socket.SHUT_RDWR)
 
     def retrbinary(self, cmd: str, callback, blocksize: int = 8192, rest=None) -> str:
-        """Como ``FTP.retrbinary``, mas com watchdog de idle-timeout."""
+        """Como ``FTP.retrbinary``, mas com watchdog de idle-timeout.
+
+        Args:
+            cmd: O comando FTP.
+            callback: Função para chamar com os dados recebidos.
+            blocksize: Tamanho do bloco.
+            rest: Onde reiniciar.
+
+        Returns:
+            str: A resposta FTP.
+        """
         last_chunk = [time.monotonic()]
         stop_event = threading.Event()
 
@@ -190,7 +222,21 @@ class FtpClient:
         metadata: dict[str, Any] | None = None,
         progress: Callable[[int], None] | None = None,
     ) -> Path:
-        """Download a file from FTP; freshness check, streaming write, and manifest."""
+        """Download a file from FTP; freshness check, streaming write, and manifest.
+
+        Args:
+            url: The remote file URL/path.
+            target_path: The local path to download to.
+            source_id: The source identifier.
+            dataset_id: The dataset identifier.
+            producer: The producer name.
+            force: Whether to force download even if fresh.
+            metadata: Additional metadata.
+            progress: Progress callback function.
+
+        Returns:
+            Path: The path to the downloaded file.
+        """
         target = Path(target_path)
         ensure_parent(target)
         with log_step(
@@ -259,6 +305,13 @@ class FtpClient:
         ``parse_line`` is called for each raw LIST line and should return a
         dict or None (to skip the line). Defaults to a generic POSIX/Windows
         parser when not provided.
+
+        Args:
+            directory: The directory to list.
+            parse_line: Custom parser for LIST lines.
+
+        Returns:
+            list[dict[str, Any]]: A list of dictionaries with file metadata.
         """
         if parse_line is None:
 

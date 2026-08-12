@@ -22,12 +22,21 @@ def check_free_space(
     *,
     margin_bytes: int = DEFAULT_MIN_FREE_MARGIN,
 ) -> bool:
+    def check_free_space(
+    path: str | os.PathLike[str],
+    required_bytes: int = 0,
+    *,
+    margin_bytes: int = DEFAULT_MIN_FREE_MARGIN,
+) -> bool:
     """Return ``True`` if the filesystem at ``path`` has sufficient free space.
 
     Args:
         path: Path or directory on the target filesystem.
         required_bytes: Number of bytes expected to be written.
         margin_bytes: Additional free space buffer (defaults to 100 MB).
+
+    Returns:
+        bool: True if there is sufficient free space, False otherwise.
     """
     target = Path(path).expanduser()
     dir_path = target if target.is_dir() or not target.suffix else target.parent
@@ -40,14 +49,28 @@ def check_free_space(
 
 
 def ensure_dir(path: str | os.PathLike[str]) -> Path:
-    """Create a directory if needed and return it as a resolved Path."""
+    """Create a directory if needed and return it as a resolved Path.
+
+    Args:
+        path: The directory path to create.
+
+    Returns:
+        Path: The resolved Path to the directory.
+    """
     directory = Path(path).expanduser()
     directory.mkdir(parents=True, exist_ok=True)
     return directory
 
 
 def ensure_parent(path: str | os.PathLike[str]) -> Path:
-    """Create the parent directory for a path and return the normalized path."""
+    """Create the parent directory for a path and return the normalized path.
+
+    Args:
+        path: The file path whose parent directory should be created.
+
+    Returns:
+        Path: The normalized target path.
+    """
     target = Path(path).expanduser()
     target.parent.mkdir(parents=True, exist_ok=True)
     return target
@@ -63,6 +86,13 @@ def is_complete_file(
     (guards against truncated/partial downloads). Use to skip work that does
     not go through :meth:`HttpClient.download_with_manifest` (which has its
     own freshness check).
+
+    Args:
+        path: The file path to check.
+        expected_size: Optional expected size in bytes.
+
+    Returns:
+        bool: True if the file exists and its size matches expected_size.
     """
     target = Path(path).expanduser()
     if not target.is_file():
@@ -73,7 +103,14 @@ def is_complete_file(
 
 
 def sha256_bytes(content: bytes) -> str:
-    """Return the SHA-256 hex digest for bytes."""
+    """Return the SHA-256 hex digest for bytes.
+
+    Args:
+        content: The byte string to hash.
+
+    Returns:
+        str: The SHA-256 hex digest.
+    """
     return hashlib.sha256(content).hexdigest()
 
 
@@ -81,6 +118,13 @@ def sha256_stream(stream: BinaryIO, chunk_size: int = DEFAULT_CHUNK_SIZE) -> str
     """Return the SHA-256 hex digest for a binary stream.
 
     The stream is read from its current position.
+
+    Args:
+        stream: The binary stream to read from.
+        chunk_size: Size of chunks to read.
+
+    Returns:
+        str: The SHA-256 hex digest.
     """
     digest = hashlib.sha256()
     for chunk in iter(lambda: stream.read(chunk_size), b""):
@@ -92,7 +136,18 @@ def sha256_file(
     path: str | os.PathLike[str],
     chunk_size: int = DEFAULT_CHUNK_SIZE,
 ) -> str:
-    """Return the SHA-256 hex digest for a file."""
+    """Return the SHA-256 hex digest for a file.
+
+    Args:
+        path: Path to the file.
+        chunk_size: Size of chunks to read.
+
+    Returns:
+        str: The SHA-256 hex digest.
+
+    Raises:
+        StorageError: If the file cannot be read.
+    """
     target = Path(path).expanduser()
     try:
         with target.open("rb") as stream:
@@ -106,7 +161,16 @@ def write_text_atomic(
     content: str,
     encoding: str = "utf-8",
 ) -> Path:
-    """Write text to a file atomically and return the target path."""
+    """Write text to a file atomically and return the target path.
+
+    Args:
+        path: The path to write to.
+        content: The text content to write.
+        encoding: The string encoding to use.
+
+    Returns:
+        Path: The target file path.
+    """
     target = ensure_parent(path)
     data = content.encode(encoding)
     return write_bytes_atomic(target, data)
@@ -122,6 +186,16 @@ def write_stream_atomic(
     argument — matching ftplib.retrbinary's callback model::
 
         ftp.retrbinary("RETR path", register_callback)
+
+    Args:
+        path: The destination path.
+        register_callback: A function that takes a chunk-writer callback.
+
+    Returns:
+        tuple[str, int]: A tuple containing the SHA-256 digest and total bytes written.
+
+    Raises:
+        StorageError: If the stream cannot be written atomically.
     """
     target = ensure_parent(path)
     digest = hashlib.sha256()
@@ -160,7 +234,18 @@ def write_stream_atomic(
 
 
 def write_bytes_atomic(path: str | os.PathLike[str], content: bytes) -> Path:
-    """Write bytes to a file atomically and return the target path."""
+    """Write bytes to a file atomically and return the target path.
+
+    Args:
+        path: The destination path.
+        content: The byte string to write.
+
+    Returns:
+        Path: The target file path.
+
+    Raises:
+        StorageError: If the file cannot be written atomically.
+    """
     target = ensure_parent(path)
     fd = -1
     temp_path: Path | None = None

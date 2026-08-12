@@ -14,7 +14,14 @@ DEFAULT_DATE_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
 
 
 def get_logger(name: str | None = None) -> logging.Logger:
-    """Return a logger with a NullHandler attached if needed."""
+    """Return a logger with a NullHandler attached if needed.
+
+    Args:
+        name: Optional name for the logger.
+
+    Returns:
+        logging.Logger: The configured logger instance.
+    """
     logger = logging.getLogger("quantilica" if name is None else name)
     if not logger.handlers:
         logger.addHandler(logging.NullHandler())
@@ -27,7 +34,13 @@ def configure_logging(
     stream: Any = sys.stderr,
     force: bool = False,
 ) -> None:
-    """Configure root logging for CLIs and scripts."""
+    """Configure root logging for CLIs and scripts.
+
+    Args:
+        level: Logging level (e.g., logging.INFO).
+        stream: Output stream for the log messages.
+        force: Whether to overwrite existing handlers.
+    """
     logging.basicConfig(
         level=level,
         format=DEFAULT_LOG_FORMAT,
@@ -48,6 +61,11 @@ def configure_cli_logging(
     ``verbose=True`` selects ``DEBUG``, otherwise ``INFO``. ``force`` defaults
     to ``True`` so CLIs re-invoked in the same interpreter (notebooks, tests)
     reconfigure cleanly instead of silently inheriting previous handlers.
+
+    Args:
+        verbose: If True, sets level to DEBUG.
+        stream: Output stream for the log messages.
+        force: Whether to overwrite existing handlers.
     """
     configure_logging(
         level=logging.DEBUG if verbose else logging.INFO,
@@ -57,7 +75,15 @@ def configure_cli_logging(
 
 
 def bind_context(message: str, **context: object) -> str:
-    """Append structured context to a human-readable log message."""
+    """Append structured context to a human-readable log message.
+
+    Args:
+        message: The original log message.
+        **context: Key-value pairs to append as context.
+
+    Returns:
+        str: The log message with context appended.
+    """
     if not context:
         return message
     fields = " ".join(f"{key}={value}" for key, value in sorted(context.items()))
@@ -73,7 +99,18 @@ def log_step(
     expected_exceptions: tuple[type[Exception], ...] = (),
     **context: object,
 ) -> Iterator[None]:
-    """Log start/end/failure messages around a block."""
+    """Log start/end/failure messages around a block.
+
+    Args:
+        logger: The logger instance to use.
+        step: Name of the step being logged.
+        level: Logging level to use for start/end messages.
+        expected_exceptions: Exceptions to log as errors instead of exceptions.
+        **context: Context fields to bind to the log messages.
+
+    Yields:
+        None
+    """
     start = time.perf_counter()
     logger.log(level, bind_context(f"Starting {step}", **context))
     try:

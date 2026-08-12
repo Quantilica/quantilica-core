@@ -116,7 +116,22 @@ class DownloadManifest:
         producer_version: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> DownloadManifest:
-        """Build a download manifest from bytes."""
+        """Build a download manifest from bytes.
+
+        Args:
+            source_id: Source ID.
+            dataset_id: Dataset ID.
+            url: Original URL.
+            content: Content bytes.
+            resource_id: Resource ID.
+            path: Original file path.
+            producer: Producer name.
+            producer_version: Producer version.
+            metadata: Extra metadata.
+
+        Returns:
+            DownloadManifest: The created manifest.
+        """
         return cls(
             source_id=source_id,
             dataset_id=dataset_id,
@@ -150,6 +165,21 @@ class DownloadManifest:
 
         Useful when the digest was computed incrementally during a streaming
         download, so the file does not need to be re-read.
+
+        Args:
+            source_id: Source ID.
+            dataset_id: Dataset ID.
+            url: Original URL.
+            sha256: SHA-256 hex digest.
+            size_bytes: Size in bytes.
+            resource_id: Resource ID.
+            path: Original file path.
+            producer: Producer name.
+            producer_version: Producer version.
+            metadata: Extra metadata.
+
+        Returns:
+            DownloadManifest: The created manifest.
         """
         return cls(
             source_id=source_id,
@@ -179,7 +209,22 @@ class DownloadManifest:
         producer_version: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> DownloadManifest:
-        """Build a download manifest from a file."""
+        """Build a download manifest from a file.
+
+        Args:
+            source_id: Source ID.
+            dataset_id: Dataset ID.
+            url: Original URL.
+            file_path: Path to the local file.
+            resource_id: Resource ID.
+            path: Original file path.
+            producer: Producer name.
+            producer_version: Producer version.
+            metadata: Extra metadata.
+
+        Returns:
+            DownloadManifest: The created manifest.
+        """
         target = Path(file_path)
         return cls(
             source_id=source_id,
@@ -196,11 +241,22 @@ class DownloadManifest:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        """Return this manifest as a dictionary."""
+        """Return this manifest as a dictionary.
+
+        Returns:
+            dict[str, Any]: The manifest dict.
+        """
         return asdict(self)
 
     def to_json(self, *, indent: int = 2) -> str:
-        """Serialize this manifest as JSON."""
+        """Serialize this manifest as JSON.
+
+        Args:
+            indent: Indentation level.
+
+        Returns:
+            str: The JSON string.
+        """
         return json.dumps(
             self.to_dict(),
             ensure_ascii=False,
@@ -209,7 +265,14 @@ class DownloadManifest:
         )
 
     def write_json(self, path: str | Path) -> Path:
-        """Write this manifest to a JSON file."""
+        """Write this manifest to a JSON file.
+
+        Args:
+            path: The path to write to.
+
+        Returns:
+            Path: The path to the written file.
+        """
         return write_text_atomic(path, self.to_json())
 
 
@@ -236,7 +299,19 @@ class DatasetManifest:
         description: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> DatasetManifest:
-        """Create a dataset manifest using the current UTC timestamp."""
+        """Create a dataset manifest using the current UTC timestamp.
+
+        Args:
+            source_id: Source ID.
+            dataset_id: Dataset ID.
+            resources: List of download manifests.
+            title: Dataset title.
+            description: Dataset description.
+            metadata: Extra metadata.
+
+        Returns:
+            DatasetManifest: The created dataset manifest.
+        """
         return cls(
             source_id=source_id,
             dataset_id=dataset_id,
@@ -248,13 +323,24 @@ class DatasetManifest:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        """Return this manifest as a dictionary."""
+        """Return this manifest as a dictionary.
+
+        Returns:
+            dict[str, Any]: The manifest dict.
+        """
         payload = asdict(self)
         payload["resources"] = [resource.to_dict() for resource in self.resources]
         return payload
 
     def to_json(self, *, indent: int = 2) -> str:
-        """Serialize this manifest as JSON."""
+        """Serialize this manifest as JSON.
+
+        Args:
+            indent: Indentation level.
+
+        Returns:
+            str: The JSON string.
+        """
         return json.dumps(
             self.to_dict(),
             ensure_ascii=False,
@@ -263,7 +349,14 @@ class DatasetManifest:
         )
 
     def write_json(self, path: str | Path) -> Path:
-        """Write this manifest to a JSON file."""
+        """Write this manifest to a JSON file.
+
+        Args:
+            path: The path to write to.
+
+        Returns:
+            Path: The written file path.
+        """
         return write_text_atomic(path, self.to_json())
 
 
@@ -292,7 +385,19 @@ class RunManifest:
         producer_version: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> RunManifest:
-        """Create a running manifest."""
+        """Create a running manifest.
+
+        Args:
+            run_id: Run ID.
+            source_id: Source ID.
+            dataset_id: Dataset ID.
+            producer: Producer name.
+            producer_version: Producer version.
+            metadata: Extra metadata.
+
+        Returns:
+            RunManifest: The created run manifest.
+        """
         return cls(
             run_id=run_id,
             started_at=isoformat_utc(),
@@ -304,7 +409,14 @@ class RunManifest:
         )
 
     def finish(self, *, status: str = "success") -> RunManifest:
-        """Return a finished copy of this run manifest."""
+        """Return a finished copy of this run manifest.
+
+        Args:
+            status: The final status.
+
+        Returns:
+            RunManifest: A new manifest marked as finished.
+        """
         return RunManifest(
             run_id=self.run_id,
             started_at=self.started_at,
@@ -318,11 +430,22 @@ class RunManifest:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        """Return this manifest as a dictionary."""
+        """Return this manifest as a dictionary.
+
+        Returns:
+            dict[str, Any]: The manifest dict.
+        """
         return asdict(self)
 
     def to_json(self, *, indent: int = 2) -> str:
-        """Serialize this manifest as JSON."""
+        """Serialize this manifest as JSON.
+
+        Args:
+            indent: Indentation level.
+
+        Returns:
+            str: The JSON string.
+        """
         return json.dumps(
             self.to_dict(),
             ensure_ascii=False,
@@ -331,5 +454,12 @@ class RunManifest:
         )
 
     def write_json(self, path: str | Path) -> Path:
-        """Write this manifest to a JSON file."""
+        """Write this manifest to a JSON file.
+
+        Args:
+            path: The path to write to.
+
+        Returns:
+            Path: The written file path.
+        """
         return write_text_atomic(path, self.to_json())

@@ -40,7 +40,16 @@ class FileCache:
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> str:
-        """Return a deterministic key for a URL request."""
+        """Return a deterministic key for a URL request.
+
+        Args:
+            url: The URL to generate a key for.
+            params: Optional query parameters.
+            headers: Optional headers.
+
+        Returns:
+            str: A deterministic hash key string.
+        """
         parts = [url]
         if params:
             parts.append(urlencode(sorted(params.items()), doseq=True))
@@ -52,19 +61,50 @@ class FileCache:
         return sha256_bytes("\n".join(parts).encode("utf-8"))
 
     def content_path(self, key: str) -> Path:
-        """Return the content path for a cache key."""
+        """Return the content path for a cache key.
+
+        Args:
+            key: The cache key.
+
+        Returns:
+            Path: The Path to the cached content file.
+        """
         return self.root / key[:2] / key[2:]
 
     def metadata_path(self, key: str) -> Path:
-        """Return the metadata path for a cache key."""
+        """Return the metadata path for a cache key.
+
+        Args:
+            key: The cache key.
+
+        Returns:
+            Path: The Path to the metadata file.
+        """
         return self.root / key[:2] / f"{key[2:]}.json"
 
     def exists(self, key: str) -> bool:
-        """Return True when content and metadata exist for a key."""
+        """Return True when content and metadata exist for a key.
+
+        Args:
+            key: The cache key.
+
+        Returns:
+            bool: True if both exist, False otherwise.
+        """
         return self.content_path(key).exists() and self.metadata_path(key).exists()
 
     def read_bytes(self, key: str) -> bytes:
-        """Read cached bytes."""
+        """Read cached bytes.
+
+        Args:
+            key: The cache key.
+
+        Returns:
+            bytes: The cached content as bytes.
+
+        Raises:
+            StorageError: If the cache entry cannot be read.
+        """
         path = self.content_path(key)
         try:
             return path.read_bytes()
@@ -72,7 +112,17 @@ class FileCache:
             raise StorageError(f"Could not read cache entry: {key}") from exc
 
     def read_metadata(self, key: str) -> CacheEntry:
-        """Read cache metadata."""
+        """Read cache metadata.
+
+        Args:
+            key: The cache key.
+
+        Returns:
+            CacheEntry: A CacheEntry containing the metadata.
+
+        Raises:
+            StorageError: If the metadata cannot be read or parsed.
+        """
         path = self.metadata_path(key)
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -87,7 +137,16 @@ class FileCache:
         *,
         metadata: Mapping[str, Any] | None = None,
     ) -> CacheEntry:
-        """Write content and metadata for a cache key."""
+        """Write content and metadata for a cache key.
+
+        Args:
+            key: The cache key.
+            content: The bytes to write.
+            metadata: Optional metadata dictionary.
+
+        Returns:
+            CacheEntry: The created CacheEntry.
+        """
         content_path = self.content_path(key)
         metadata_path = self.metadata_path(key)
         write_bytes_atomic(content_path, content)
@@ -107,7 +166,15 @@ class FileCache:
         return entry
 
     def is_fresh(self, key: str, *, ttl_seconds: int | None = None) -> bool:
-        """Return True if a cache entry exists and is within TTL."""
+        """Return True if a cache entry exists and is within TTL.
+
+        Args:
+            key: The cache key.
+            ttl_seconds: Optional time-to-live in seconds.
+
+        Returns:
+            bool: True if the entry exists and is fresh.
+        """
         if not self.exists(key):
             return False
         if ttl_seconds is None:
@@ -118,7 +185,15 @@ class FileCache:
         return age <= ttl_seconds
 
     def get_bytes(self, key: str, *, ttl_seconds: int | None = None) -> bytes | None:
-        """Return cached bytes when present and fresh, otherwise None."""
+        """Return cached bytes when present and fresh, otherwise None.
+
+        Args:
+            key: The cache key.
+            ttl_seconds: Optional TTL in seconds.
+
+        Returns:
+            bytes | None: The cached bytes if fresh, otherwise None.
+        """
         if not self.is_fresh(key, ttl_seconds=ttl_seconds):
             return None
         return self.read_bytes(key)

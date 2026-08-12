@@ -54,6 +54,12 @@ class HttpStatusError(FetchError):
     """Raised when an HTTP response has an unexpected status code."""
 
     def __init__(self, url: str, status_code: int) -> None:
+        """Initialize the HttpStatusError.
+
+        Args:
+            url: The URL that caused the error.
+            status_code: The HTTP status code received.
+        """
         super().__init__(f"HTTP {status_code} while fetching {url}")
         self.url = url
         self.status_code = status_code
@@ -114,7 +120,24 @@ class HttpClient:
         content: bytes | None = None,
         json: Any | None = None,
     ) -> httpx.Response:
-        """Perform an HTTP request with retries."""
+        """Perform an HTTP request with retries.
+
+        Args:
+            method: The HTTP method to use.
+            url: The URL to request.
+            params: Optional query parameters.
+            headers: Optional headers.
+            data: Optional form data.
+            content: Optional byte content.
+            json: Optional JSON data.
+
+        Returns:
+            httpx.Response: The HTTP response.
+
+        Raises:
+            RetryableHttpStatusError: If a retryable status is received and attempts are exhausted.
+            HttpStatusError: If a non-retryable error status is received.
+        """
 
         def do_request() -> httpx.Response:
             request_headers = dict(self.headers)
@@ -165,7 +188,16 @@ class HttpClient:
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> httpx.Response:
-        """Fetch a URL and return the response."""
+        """Fetch a URL and return the response.
+
+        Args:
+            url: The URL to fetch.
+            params: Optional query parameters.
+            headers: Optional headers.
+
+        Returns:
+            httpx.Response: The HTTP response.
+        """
         return self.request("GET", url, params=params, headers=headers)
 
     def head(
@@ -175,7 +207,16 @@ class HttpClient:
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> httpx.Response:
-        """Perform a HEAD request and return the response."""
+        """Perform a HEAD request and return the response.
+
+        Args:
+            url: The URL to fetch.
+            params: Optional query parameters.
+            headers: Optional headers.
+
+        Returns:
+            httpx.Response: The HTTP response.
+        """
         return self.request("HEAD", url, params=params, headers=headers)
 
     def head_or_get(
@@ -191,6 +232,14 @@ class HttpClient:
         Allowed). This method tries HEAD first, and if it fails with 403, 405 or
         501, opens a GET with streaming, reads only headers, and closes the
         connection without downloading the body.
+
+        Args:
+            url: The URL to fetch.
+            params: Optional query parameters.
+            headers: Optional headers.
+
+        Returns:
+            httpx.Response: The HTTP response.
         """
         try:
             return self.head(url, params=params, headers=headers)
@@ -239,6 +288,14 @@ class HttpClient:
         Returns ``{"size": int, "last_modified": datetime | None}``.
         ``last_modified`` is timezone-aware (UTC) or ``None`` when the header
         is absent or unparseable.  Propagates ``FetchError`` on HTTP failure.
+
+        Args:
+            url: The URL to fetch.
+            params: Optional query parameters.
+            headers: Optional headers.
+
+        Returns:
+            dict[str, Any]: A dictionary containing 'size' and 'last_modified'.
         """
         resp = self.head(url, params=params, headers=headers)
         size = int(resp.headers.get("Content-Length", 0))
@@ -262,6 +319,14 @@ class HttpClient:
 
         Returns ``{"size": int, "last_modified": datetime | None}``.
         Uses :meth:`head_or_get` internally.
+
+        Args:
+            url: The URL to fetch.
+            params: Optional query parameters.
+            headers: Optional headers.
+
+        Returns:
+            dict[str, Any]: A dictionary containing 'size' and 'last_modified'.
         """
         resp = self.head_or_get(url, params=params, headers=headers)
         size = int(resp.headers.get("Content-Length", 0))
@@ -285,6 +350,14 @@ class HttpClient:
 
         Never raises: any fetch/parse failure is logged as a warning and
         returns ``None`` (handy for building stamped filenames).
+
+        Args:
+            url: The URL to fetch.
+            params: Optional query parameters.
+            headers: Optional headers.
+
+        Returns:
+            dt.date | None: The parsed date, or None if unavailable or on error.
         """
         try:
             meta = self.head_metadata_or_get(url, params=params, headers=headers)
@@ -302,7 +375,17 @@ class HttpClient:
         headers: Mapping[str, str] | None = None,
         progress: ProgressCallback | None = None,
     ) -> bytes:
-        """Fetch a URL and return response bytes."""
+        """Fetch a URL and return response bytes.
+
+        Args:
+            url: The URL to fetch.
+            params: Optional query parameters.
+            headers: Optional headers.
+            progress: Optional progress callback.
+
+        Returns:
+            bytes: The response content.
+        """
         if progress is None:
             return self.get(url, params=params, headers=headers).content
 
@@ -336,7 +419,18 @@ class HttpClient:
         encoding: str | None = None,
         progress: ProgressCallback | None = None,
     ) -> str:
-        """Fetch a URL and return response text."""
+        """Fetch a URL and return response text.
+
+        Args:
+            url: The URL to fetch.
+            params: Optional query parameters.
+            headers: Optional headers.
+            encoding: Optional encoding to override the response encoding.
+            progress: Optional progress callback.
+
+        Returns:
+            str: The response text.
+        """
         if progress is None:
             response = self.get(url, params=params, headers=headers)
             if encoding:
@@ -356,7 +450,20 @@ class HttpClient:
         headers: Mapping[str, str] | None = None,
         progress: ProgressCallback | None = None,
     ) -> Any:
-        """Fetch a URL and parse JSON."""
+        """Fetch a URL and parse JSON.
+
+        Args:
+            url: The URL to fetch.
+            params: Optional query parameters.
+            headers: Optional headers.
+            progress: Optional progress callback.
+
+        Returns:
+            Any: The parsed JSON data.
+
+        Raises:
+            FetchError: If the JSON is invalid.
+        """
         if progress is None:
             response = self.get(url, params=params, headers=headers)
             try:
@@ -382,7 +489,17 @@ class HttpClient:
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> Path:
-        """Download a URL to a file using atomic write."""
+        """Download a URL to a file using atomic write.
+
+        Args:
+            url: The URL to download.
+            target_path: The local path to save the file.
+            params: Optional query parameters.
+            headers: Optional headers.
+
+        Returns:
+            Path: The path to the downloaded file.
+        """
         content = self.get_bytes(url, params=params, headers=headers)
         return write_bytes_atomic(target_path, content)
 
@@ -409,6 +526,25 @@ class HttpClient:
         ``progress`` is invoked as ``(downloaded_bytes, total_bytes)`` after
         each chunk is written. ``total_bytes`` is ``0`` when the remote does
         not advertise ``Content-Length``.
+
+        Args:
+            url: The URL to download.
+            target_path: The local path to save the file.
+            source_id: The source identifier.
+            dataset_id: The dataset identifier.
+            producer: The producer name.
+            params: Optional query parameters.
+            headers: Optional headers.
+            force: Whether to force download even if fresh.
+            check_size: Whether to check file size for freshness.
+            progress: Optional progress callback.
+            chunk_size: The chunk size for streaming.
+
+        Returns:
+            Path: The path to the downloaded file.
+
+        Raises:
+            StorageError: If there is insufficient disk space or a stream error.
         """
         target = Path(target_path)
         with log_step(
@@ -507,7 +643,21 @@ class HttpClient:
         headers: Mapping[str, str] | None = None,
         data: Any | None = None,
     ):
-        """Open a streaming HTTP request."""
+        """Open a streaming HTTP request.
+
+        Args:
+            method: The HTTP method to use.
+            url: The URL to request.
+            params: Optional query parameters.
+            headers: Optional headers.
+            data: Optional form data.
+
+        Yields:
+            httpx.Response: The HTTP response stream.
+
+        Raises:
+            HttpStatusError: If a non-retryable error status is received.
+        """
         request_headers = dict(self.headers)
         if headers:
             request_headers.update(headers)
@@ -569,7 +719,24 @@ class AsyncHttpClient:
         content: bytes | None = None,
         json: Any | None = None,
     ) -> httpx.Response:
-        """Perform an HTTP request with retries."""
+        """Perform an HTTP request with retries.
+
+        Args:
+            method: The HTTP method to use.
+            url: The URL to request.
+            params: Optional query parameters.
+            headers: Optional headers.
+            data: Optional form data.
+            content: Optional byte content.
+            json: Optional JSON data.
+
+        Returns:
+            httpx.Response: The HTTP response.
+
+        Raises:
+            RetryableHttpStatusError: If a retryable status is received and attempts are exhausted.
+            HttpStatusError: If a non-retryable error status is received.
+        """
 
         async def do_request() -> httpx.Response:
             request_headers = dict(self.headers)
@@ -620,7 +787,16 @@ class AsyncHttpClient:
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> httpx.Response:
-        """Fetch a URL and return the response."""
+        """Fetch a URL and return the response.
+
+        Args:
+            url: The URL to fetch.
+            params: Optional query parameters.
+            headers: Optional headers.
+
+        Returns:
+            httpx.Response: The HTTP response.
+        """
         return await self.request("GET", url, params=params, headers=headers)
 
     async def head(
@@ -630,7 +806,16 @@ class AsyncHttpClient:
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> httpx.Response:
-        """Perform a HEAD request and return the response."""
+        """Perform a HEAD request and return the response.
+
+        Args:
+            url: The URL to fetch.
+            params: Optional query parameters.
+            headers: Optional headers.
+
+        Returns:
+            httpx.Response: The HTTP response.
+        """
         return await self.request("HEAD", url, params=params, headers=headers)
 
     async def head_or_get(
@@ -645,6 +830,14 @@ class AsyncHttpClient:
         Some servers don't support HEAD requests. This method tries HEAD first,
         and if it fails with 403, 405 or 501, opens a GET with streaming, reads only
         headers, and closes the connection without downloading the body.
+
+        Args:
+            url: The URL to fetch.
+            params: Optional query parameters.
+            headers: Optional headers.
+
+        Returns:
+            httpx.Response: The HTTP response.
         """
         try:
             return await self.head(url, params=params, headers=headers)
@@ -691,6 +884,14 @@ class AsyncHttpClient:
         """Async version of head_metadata.
 
         Returns ``{"size": int, "last_modified": datetime | None}``.
+
+        Args:
+            url: The URL to fetch.
+            params: Optional query parameters.
+            headers: Optional headers.
+
+        Returns:
+            dict[str, Any]: A dictionary containing 'size' and 'last_modified'.
         """
         resp = await self.head(url, params=params, headers=headers)
         size = int(resp.headers.get("Content-Length", 0))
@@ -714,6 +915,14 @@ class AsyncHttpClient:
 
         Returns ``{"size": int, "last_modified": datetime | None}``.
         Uses :meth:`head_or_get` internally.
+
+        Args:
+            url: The URL to fetch.
+            params: Optional query parameters.
+            headers: Optional headers.
+
+        Returns:
+            dict[str, Any]: A dictionary containing 'size' and 'last_modified'.
         """
         resp = await self.head_or_get(url, params=params, headers=headers)
         size = int(resp.headers.get("Content-Length", 0))
@@ -733,7 +942,16 @@ class AsyncHttpClient:
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> dt.date | None:
-        """Async version of :meth:`HttpClient.head_last_modified_date`."""
+        """Async version of :meth:`HttpClient.head_last_modified_date`.
+
+        Args:
+            url: The URL to fetch.
+            params: Optional query parameters.
+            headers: Optional headers.
+
+        Returns:
+            dt.date | None: The parsed date, or None if unavailable or on error.
+        """
         try:
             meta = await self.head_metadata_or_get(url, params=params, headers=headers)
         except Exception as exc:
@@ -749,7 +967,16 @@ class AsyncHttpClient:
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> bytes:
-        """Fetch a URL and return response bytes."""
+        """Fetch a URL and return response bytes.
+
+        Args:
+            url: The URL to fetch.
+            params: Optional query parameters.
+            headers: Optional headers.
+
+        Returns:
+            bytes: The response content.
+        """
         response = await self.get(url, params=params, headers=headers)
         return response.content
 
@@ -761,7 +988,17 @@ class AsyncHttpClient:
         headers: Mapping[str, str] | None = None,
         encoding: str | None = None,
     ) -> str:
-        """Fetch a URL and return response text."""
+        """Fetch a URL and return response text.
+
+        Args:
+            url: The URL to fetch.
+            params: Optional query parameters.
+            headers: Optional headers.
+            encoding: Optional encoding to override the response encoding.
+
+        Returns:
+            str: The response text.
+        """
         response = await self.get(url, params=params, headers=headers)
         if encoding:
             response.encoding = encoding
@@ -774,7 +1011,19 @@ class AsyncHttpClient:
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> Any:
-        """Fetch a URL and parse JSON."""
+        """Fetch a URL and parse JSON.
+
+        Args:
+            url: The URL to fetch.
+            params: Optional query parameters.
+            headers: Optional headers.
+
+        Returns:
+            Any: The parsed JSON data.
+
+        Raises:
+            FetchError: If the JSON is invalid.
+        """
         response = await self.get(url, params=params, headers=headers)
         try:
             return response.json()
@@ -789,7 +1038,17 @@ class AsyncHttpClient:
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> Path:
-        """Download a URL to a file using atomic write."""
+        """Download a URL to a file using atomic write.
+
+        Args:
+            url: The URL to download.
+            target_path: The local path to save the file.
+            params: Optional query parameters.
+            headers: Optional headers.
+
+        Returns:
+            Path: The path to the downloaded file.
+        """
         content = await self.get_bytes(url, params=params, headers=headers)
         return write_bytes_atomic(target_path, content)
 
@@ -811,6 +1070,22 @@ class AsyncHttpClient:
         """Stream a URL to disk asynchronously with freshness check and manifest.
 
         See :meth:`HttpClient.download_with_manifest` for parameter semantics.
+
+        Args:
+            url: The URL to download.
+            target_path: The local path to save the file.
+            source_id: The source identifier.
+            dataset_id: The dataset identifier.
+            producer: The producer name.
+            params: Optional query parameters.
+            headers: Optional headers.
+            force: Whether to force download even if fresh.
+            check_size: Whether to check file size for freshness.
+            progress: Optional progress callback.
+            chunk_size: The chunk size for streaming.
+
+        Returns:
+            Path: The path to the downloaded file.
         """
         target = Path(target_path)
         with log_step(
@@ -903,7 +1178,21 @@ class AsyncHttpClient:
         headers: Mapping[str, str] | None = None,
         data: Any | None = None,
     ) -> AsyncGenerator[httpx.Response, None]:
-        """Open a streaming HTTP request asynchronously."""
+        """Open a streaming HTTP request asynchronously.
+
+        Args:
+            method: The HTTP method to use.
+            url: The URL to request.
+            params: Optional query parameters.
+            headers: Optional headers.
+            data: Optional form data.
+
+        Yields:
+            httpx.Response: The HTTP response stream.
+
+        Raises:
+            HttpStatusError: If a non-retryable error status is received.
+        """
         request_headers = dict(self.headers)
         if headers:
             request_headers.update(headers)

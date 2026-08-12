@@ -26,6 +26,15 @@ def stamp_filename(
 
     ``precision="date"`` → ``@YYYYMMDD``
     ``precision="datetime"`` → ``@YYYYMMDDTHHMMSS``
+
+    Args:
+        base: The base filename.
+        ext: The file extension.
+        timestamp: The timestamp to append, or None.
+        precision: The precision of the timestamp ("date" or "datetime").
+
+    Returns:
+        str: The stamped filename string.
     """
     if timestamp is None:
         return f"{base}.{ext}"
@@ -46,13 +55,29 @@ def build_stamped_filename(
 
     Example: ``build_stamped_filename("exp", 2024, ext="csv", timestamp=d)``
     → ``exp_2024@20240315.csv``. Falsy parts (``None``/``""``) are dropped.
+
+    Args:
+        *parts: String or integer parts to join.
+        ext: The file extension.
+        timestamp: The timestamp to append, or None.
+        precision: The precision of the timestamp.
+
+    Returns:
+        str: The stamped filename string.
     """
     base = "_".join(str(p) for p in parts if p not in (None, ""))
     return stamp_filename(base, ext, timestamp, precision=precision)
 
 
 def slugify(value: str) -> str:
-    """Normalize a string to a URL-friendly slug."""
+    """Normalize a string to a URL-friendly slug.
+
+    Args:
+        value: The string to slugify.
+
+    Returns:
+        str: The slugified string.
+    """
     value = (
         unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
     )
@@ -74,12 +99,24 @@ class BaseDataRepository:
         self.storage = LocalStorage(root)
 
     def dataset_path(self, dataset_id: str, *subkeys: str) -> Path:
-        """Return the absolute path of ``dataset_id/subkeys`` under the storage root."""
+        """Return the absolute path of ``dataset_id/subkeys`` under the storage root.
+
+        Args:
+            dataset_id: The ID of the dataset.
+            *subkeys: Additional path components.
+
+        Returns:
+            Path: The absolute path.
+        """
         key = "/".join([dataset_id, *subkeys])
         return self.storage.path_for(key)
 
     def list_dataset_ids(self) -> list[str]:
-        """Return all dataset directories at the storage root, sorted."""
+        """Return all dataset directories at the storage root, sorted.
+
+        Returns:
+            list[str]: A list of dataset IDs.
+        """
         root = self.storage.root
         if not root.exists():
             return []
@@ -97,7 +134,16 @@ class StampedDataRepository(BaseDataRepository):
     def get_latest_stamped_file(
         self, dataset_id: str, slug: str, ext: str = "csv"
     ) -> Path | None:
-        """Return the newest ``{slug}@*.{ext}`` file under ``{dataset_id}/``."""
+        """Return the newest ``{slug}@*.{ext}`` file under ``{dataset_id}/``.
+
+        Args:
+            dataset_id: The dataset ID.
+            slug: The file slug.
+            ext: The file extension.
+
+        Returns:
+            Path | None: The path to the newest file, or None if not found.
+        """
         dataset_dir = self.dataset_path(dataset_id)
         if not dataset_dir.exists():
             return None
@@ -117,7 +163,15 @@ class StampedDataRepository(BaseDataRepository):
     def get_all_latest_stamped_files(
         self, dataset_id: str, ext: str = "csv"
     ) -> list[Path]:
-        """Return one file per slug — the latest @timestamp variant of each."""
+        """Return one file per slug — the latest @timestamp variant of each.
+
+        Args:
+            dataset_id: The dataset ID.
+            ext: The file extension.
+
+        Returns:
+            list[Path]: A list of paths to the latest files.
+        """
         dataset_dir = self.dataset_path(dataset_id)
         if not dataset_dir.exists():
             return []
@@ -151,7 +205,17 @@ class LocalStorage:
         self.root = ensure_dir(root).resolve()
 
     def path_for(self, key: str) -> Path:
-        """Return the absolute path for a storage key."""
+        """Return the absolute path for a storage key.
+
+        Args:
+            key: The storage key.
+
+        Returns:
+            Path: The absolute path.
+
+        Raises:
+            StorageError: If the key escapes the storage root.
+        """
         normalized_key = self.normalize_key(key)
         # normalize_key guarantees no '..' and no absolute paths, so joining
         # to self.root (already resolved) always stays within the root.
@@ -165,7 +229,17 @@ class LocalStorage:
         return target
 
     def normalize_key(self, key: str) -> str:
-        """Normalize and validate an object key."""
+        """Normalize and validate an object key.
+
+        Args:
+            key: The storage key to normalize.
+
+        Returns:
+            str: The normalized key.
+
+        Raises:
+            StorageError: If the key is empty or invalid.
+        """
         if not key or key.strip() == "":
             raise StorageError("Storage key cannot be empty")
         normalized = PurePosixPath(key.replace("\\", "/"))
@@ -174,11 +248,28 @@ class LocalStorage:
         return normalized.as_posix()
 
     def exists(self, key: str) -> bool:
-        """Return True if a key exists and is a file."""
+        """Return True if a key exists and is a file.
+
+        Args:
+            key: The storage key.
+
+        Returns:
+            bool: True if the key exists as a file, False otherwise.
+        """
         return self.path_for(key).is_file()
 
     def read_bytes(self, key: str) -> bytes:
-        """Read an object as bytes."""
+        """Read an object as bytes.
+
+        Args:
+            key: The storage key.
+
+        Returns:
+            bytes: The content of the object.
+
+        Raises:
+            StorageError: If the object cannot be read.
+        """
         path = self.path_for(key)
         try:
             return path.read_bytes()
@@ -186,7 +277,18 @@ class LocalStorage:
             raise StorageError(f"Could not read object: {key}") from exc
 
     def read_text(self, key: str, *, encoding: str = "utf-8") -> str:
-        """Read an object as text."""
+        """Read an object as text.
+
+        Args:
+            key: The storage key.
+            encoding: The text encoding.
+
+        Returns:
+            str: The text content of the object.
+
+        Raises:
+            StorageError: If the object cannot be read.
+        """
         path = self.path_for(key)
         try:
             return path.read_text(encoding=encoding)
@@ -194,7 +296,15 @@ class LocalStorage:
             raise StorageError(f"Could not read object: {key}") from exc
 
     def write_bytes(self, key: str, content: bytes) -> ObjectStat:
-        """Write bytes atomically and return object metadata."""
+        """Write bytes atomically and return object metadata.
+
+        Args:
+            key: The storage key.
+            content: The bytes to write.
+
+        Returns:
+            ObjectStat: The metadata of the written object.
+        """
         path = write_bytes_atomic(self.path_for(key), content)
         return self.stat(self._key_from_path(path))
 
@@ -205,12 +315,29 @@ class LocalStorage:
         *,
         encoding: str = "utf-8",
     ) -> ObjectStat:
-        """Write text atomically and return object metadata."""
+        """Write text atomically and return object metadata.
+
+        Args:
+            key: The storage key.
+            content: The text to write.
+            encoding: The text encoding.
+
+        Returns:
+            ObjectStat: The metadata of the written object.
+        """
         path = write_text_atomic(self.path_for(key), content, encoding=encoding)
         return self.stat(self._key_from_path(path))
 
     def delete(self, key: str, *, missing_ok: bool = True) -> None:
-        """Delete an object."""
+        """Delete an object.
+
+        Args:
+            key: The storage key.
+            missing_ok: If True, do not raise an error if the object is missing.
+
+        Raises:
+            StorageError: If the object cannot be deleted.
+        """
         path = self.path_for(key)
         try:
             path.unlink(missing_ok=missing_ok)
@@ -218,7 +345,17 @@ class LocalStorage:
             raise StorageError(f"Could not delete object: {key}") from exc
 
     def list(self, prefix: str = "") -> list[str]:
-        """List object keys under a prefix."""
+        """List object keys under a prefix.
+
+        Args:
+            prefix: The prefix to list objects under.
+
+        Returns:
+            list[str]: A list of object keys.
+
+        Raises:
+            StorageError: If the objects cannot be listed.
+        """
         base = self.path_for(prefix) if prefix else self.root
         if not base.exists():
             return []
@@ -233,7 +370,17 @@ class LocalStorage:
         return sorted(keys)
 
     def stat(self, key: str) -> ObjectStat:
-        """Return object metadata."""
+        """Return object metadata.
+
+        Args:
+            key: The storage key.
+
+        Returns:
+            ObjectStat: The metadata of the object.
+
+        Raises:
+            StorageError: If the object cannot be stated or is not a file.
+        """
         path = self.path_for(key)
         try:
             raw_stat = path.stat()
