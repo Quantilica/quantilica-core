@@ -22,12 +22,6 @@ def check_free_space(
     *,
     margin_bytes: int = DEFAULT_MIN_FREE_MARGIN,
 ) -> bool:
-    def check_free_space(
-    path: str | os.PathLike[str],
-    required_bytes: int = 0,
-    *,
-    margin_bytes: int = DEFAULT_MIN_FREE_MARGIN,
-) -> bool:
     """Return ``True`` if the filesystem at ``path`` has sufficient free space.
 
     Args:
