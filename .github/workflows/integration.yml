@@ -1,0 +1,94 @@
+name: Workspace Integration
+
+# Anti-deriva: nenhum CI de pacote isolado enxerga a quebra de um vizinho
+# (causa da perda de ~1 mês no sidra-sql com load_agregado). Monta o uv
+# workspace com todos os members públicos, resolve tudo junto e roda os
+# testes de cada pacote no MESMO ambiente — deriva vira vermelha em <24h.
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+jobs:
+  integration:
+    name: Workspace conjunto (anti-deriva)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Assemble workspace
+        run: |
+          mkdir -p ws && cd ws
+          cat > pyproject.toml <<'TOML'
+          [tool.uv.workspace]
+          members = [
+              "quantilica-core",
+              "quantilica-analytics",
+              "quantilica-cli",
+              "quantilica-catalog",
+              "sidra-fetcher",
+              "sidra-sql",
+              "comex-fetcher",
+              "datasus-fetcher",
+              "inmet-fetcher",
+              "pdet-fetcher",
+              "rtn-fetcher",
+              "tesouro-direto-fetcher",
+              "bcb-sgs-fetcher",
+              "bcb-sgs-sql",
+              "anp-fetcher",
+              "anac-fetcher",
+              "inep-fetcher",
+              "rfb-cnpj-fetcher",
+          ]
+
+          [tool.uv.sources]
+          quantilica-core = { workspace = true }
+          quantilica-analytics = { workspace = true }
+          quantilica-cli = { workspace = true }
+          quantilica-catalog = { workspace = true }
+          sidra-fetcher = { workspace = true }
+          sidra-sql = { workspace = true }
+          bcb-sgs-fetcher = { workspace = true }
+          bcb-sgs-sql = { workspace = true }
+          TOML
+          for repo in quantilica-core quantilica-analytics quantilica-cli quantilica-catalog \
+              sidra-fetcher sidra-sql comex-fetcher datasus-fetcher inmet-fetcher pdet-fetcher \
+              rtn-fetcher tesouro-direto-fetcher bcb-sgs-fetcher bcb-sgs-sql anp-fetcher \
+              anac-fetcher inep-fetcher rfb-cnpj-fetcher; do
+            git clone --depth 1 "https://github.com/Quantilica/$repo.git"
+          done
+
+      - name: Sync workspace (com retry — índice tem flake de DNS)
+        run: |
+          cd ws
+          for i in 1 2 3; do
+            if uv sync --all-packages; then exit 0; fi
+            echo "::warning::uv sync falhou (tentativa $i/3); nova tentativa em 10s"
+            sleep 10
+          done
+          exit 1
+
+      - name: Hygiene — nenhum tool.uv.sources de workspace em repo publicado
+        run: |
+          cd ws
+          if grep -rn 'workspace = true' --include='pyproject.toml' . | grep -v '^\./pyproject\.toml'; then
+            echo "::error::[tool.uv.sources] { workspace = true } vazou para um pyproject publicado (quebra CI standalone — caso anac 2026-08-29)"
+            exit 1
+          fi
+
+      - name: Testes de todos os pacotes no mesmo ambiente
+        run: |
+          cd ws
+          for p in quantilica-core quantilica-analytics quantilica-cli quantilica-catalog \
+              sidra-fetcher sidra-sql comex-fetcher datasus-fetcher inmet-fetcher pdet-fetcher \
+              rtn-fetcher tesouro-direto-fetcher bcb-sgs-fetcher bcb-sgs-sql anp-fetcher \
+              anac-fetcher inep-fetcher rfb-cnpj-fetcher; do
+            echo "::group::$p"
+            uv run --no-sync --package "$p" pytest "$p/tests" -q
+            echo "::endgroup::"
+          done
