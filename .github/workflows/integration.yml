@@ -73,6 +73,12 @@ jobs:
           done
           exit 1
 
+      # `uv sync --all-packages` não instala extras de members; os testes de
+      # leitura de Excel (anp/anac) precisam dos backends do polars/pandas.
+      # Deriva detectada na primeira execução (polars passou a exigir fastexcel).
+      - name: Extras de teste (backends de Excel)
+        run: cd ws && uv pip install fastexcel openpyxl
+
       - name: Hygiene — nenhum tool.uv.sources de workspace em repo publicado
         run: |
           cd ws
@@ -84,11 +90,19 @@ jobs:
       - name: Testes de todos os pacotes no mesmo ambiente
         run: |
           cd ws
+          FAILED=""
           for p in quantilica-core quantilica-analytics quantilica-cli quantilica-catalog \
               sidra-fetcher sidra-sql comex-fetcher datasus-fetcher inmet-fetcher pdet-fetcher \
               rtn-fetcher tesouro-direto-fetcher bcb-sgs-fetcher bcb-sgs-sql anp-fetcher \
               anac-fetcher inep-fetcher rfb-cnpj-fetcher; do
             echo "::group::$p"
-            uv run --no-sync --package "$p" pytest "$p/tests" -q
+            if ! uv run --no-sync --package "$p" pytest "$p/tests" -q; then
+              FAILED="$FAILED $p"
+              echo "::error::$p falhou no ambiente conjunto do workspace"
+            fi
             echo "::endgroup::"
           done
+          if [ -n "$FAILED" ]; then
+            echo "Pacotes com deriva no workspace:$FAILED"
+            exit 1
+          fi
