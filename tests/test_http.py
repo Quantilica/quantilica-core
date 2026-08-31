@@ -3,7 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 
-import httpx
+import httpx2
 import pytest
 
 from quantilica.core.exceptions import FetchError
@@ -18,27 +18,27 @@ from quantilica.core.http import (
 def test_http_client_get_json():
     def handler(request):
         assert request.headers["user-agent"] == "quantilica-core"
-        return httpx.Response(200, json={"ok": True})
+        return httpx2.Response(200, json={"ok": True})
 
-    client = HttpClient(attempts=1, transport=httpx.MockTransport(handler))
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
 
     assert client.get_json("https://example.test/data") == {"ok": True}
 
 
 def test_http_client_get_text_with_encoding():
     def handler(request):
-        return httpx.Response(200, content="olá".encode("latin-1"))
+        return httpx2.Response(200, content="olá".encode("latin-1"))
 
-    client = HttpClient(attempts=1, transport=httpx.MockTransport(handler))
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
 
     assert client.get_text("https://example.test/data", encoding="latin-1") == "olá"
 
 
 def test_http_client_download(tmp_path):
     def handler(request):
-        return httpx.Response(200, content=b"abc")
+        return httpx2.Response(200, content=b"abc")
 
-    client = HttpClient(attempts=1, transport=httpx.MockTransport(handler))
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
     path = client.download("https://example.test/data", tmp_path / "data.bin")
 
     assert path.read_bytes() == b"abc"
@@ -46,9 +46,9 @@ def test_http_client_download(tmp_path):
 
 def test_http_client_raises_status_error_for_404():
     def handler(request):
-        return httpx.Response(404)
+        return httpx2.Response(404)
 
-    client = HttpClient(attempts=1, transport=httpx.MockTransport(handler))
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
 
     with pytest.raises(HttpStatusError) as exc_info:
         client.get_bytes("https://example.test/missing")
@@ -63,13 +63,13 @@ def test_http_client_retries_retryable_status():
         nonlocal calls
         calls += 1
         if calls == 1:
-            return httpx.Response(503)
-        return httpx.Response(200, content=b"ok")
+            return httpx2.Response(503)
+        return httpx2.Response(200, content=b"ok")
 
     client = HttpClient(
         attempts=2,
         retry_base_delay=0,
-        transport=httpx.MockTransport(handler),
+        transport=httpx2.MockTransport(handler),
     )
 
     assert client.get_bytes("https://example.test/data") == b"ok"
@@ -78,9 +78,9 @@ def test_http_client_retries_retryable_status():
 
 def test_http_client_invalid_json():
     def handler(request):
-        return httpx.Response(200, content=b"not json")
+        return httpx2.Response(200, content=b"not json")
 
-    client = HttpClient(attempts=1, transport=httpx.MockTransport(handler))
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
 
     with pytest.raises(FetchError):
         client.get_json("https://example.test/data")
@@ -96,14 +96,14 @@ def _download_handler_factory(
 ):
     """Build a handler that answers HEAD with size + Last-Modified, GET with payload."""
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         headers = {
             "Content-Length": str(len(payload)),
             "Last-Modified": last_modified,
         }
         if request.method == "HEAD":
-            return httpx.Response(200, headers=headers)
-        return httpx.Response(200, content=payload, headers=headers)
+            return httpx2.Response(200, headers=headers)
+        return httpx2.Response(200, content=payload, headers=headers)
 
     return handler
 
@@ -111,7 +111,7 @@ def _download_handler_factory(
 def test_download_with_manifest_streams_and_writes_manifest(tmp_path):
     payload = b"x" * (200 * 1024)  # > 1 chunk at 64KB
     handler = _download_handler_factory(payload)
-    client = HttpClient(attempts=1, transport=httpx.MockTransport(handler))
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
 
     target = tmp_path / "data.bin"
     out = client.download_with_manifest(
@@ -135,7 +135,7 @@ def test_download_with_manifest_streams_and_writes_manifest(tmp_path):
 def test_download_with_manifest_invokes_progress(tmp_path):
     payload = b"y" * (150 * 1024)
     handler = _download_handler_factory(payload)
-    client = HttpClient(attempts=1, transport=httpx.MockTransport(handler))
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
 
     seen: list[tuple[int, int]] = []
     client.download_with_manifest(
@@ -166,15 +166,15 @@ def test_download_with_manifest_skips_when_up_to_date(tmp_path):
 
     calls: list[str] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         calls.append(request.method)
         headers = {"Content-Length": str(len(payload))}
         if request.method == "HEAD":
-            return httpx.Response(200, headers=headers)
+            return httpx2.Response(200, headers=headers)
         # GET should not be called when freshness matches
-        return httpx.Response(200, content=payload, headers=headers)
+        return httpx2.Response(200, content=payload, headers=headers)
 
-    client = HttpClient(attempts=1, transport=httpx.MockTransport(handler))
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
     client.download_with_manifest(
         "https://example.test/data",
         target,
@@ -198,12 +198,12 @@ def test_download_with_manifest_redownloads_when_head_fails_and_file_exists(
     target = tmp_path / "existing.bin"
     target.write_bytes(b"stale-content")
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         if request.method == "HEAD":
-            return httpx.Response(403)
-        return httpx.Response(200, content=payload)
+            return httpx2.Response(403)
+        return httpx2.Response(200, content=payload)
 
-    client = HttpClient(attempts=1, transport=httpx.MockTransport(handler))
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
     out = client.download_with_manifest(
         "https://example.test/data",
         target,
@@ -223,12 +223,12 @@ def test_async_download_with_manifest_redownloads_when_head_fails_and_file_exist
     target = tmp_path / "existing.bin"
     target.write_bytes(b"stale-content")
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         if request.method == "HEAD":
-            return httpx.Response(403)
-        return httpx.Response(200, content=payload)
+            return httpx2.Response(403)
+        return httpx2.Response(200, content=payload)
 
-    client = AsyncHttpClient(attempts=1, transport=httpx.MockTransport(handler))
+    client = AsyncHttpClient(attempts=1, transport=httpx2.MockTransport(handler))
 
     async def run() -> Path:
         return await client.download_with_manifest(
@@ -248,7 +248,7 @@ def test_async_download_with_manifest_redownloads_when_head_fails_and_file_exist
 def test_async_download_with_manifest_streams_and_reports_progress(tmp_path):
     payload = b"z" * (100 * 1024)
     handler = _download_handler_factory(payload)
-    client = AsyncHttpClient(attempts=1, transport=httpx.MockTransport(handler))
+    client = AsyncHttpClient(attempts=1, transport=httpx2.MockTransport(handler))
 
     seen: list[tuple[int, int]] = []
     target = tmp_path / "async.bin"
@@ -277,7 +277,7 @@ def test_head_last_modified_date_returns_date():
     from datetime import date
 
     handler = _download_handler_factory(b"abc")
-    client = HttpClient(attempts=1, transport=httpx.MockTransport(handler))
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
 
     # _DEFAULT_LAST_MODIFIED == "Wed, 21 Oct 2026 07:28:00 GMT"
     assert client.head_last_modified_date("https://example.test/data") == date(
@@ -287,18 +287,18 @@ def test_head_last_modified_date_returns_date():
 
 def test_head_last_modified_date_none_on_failure():
     def handler(request):
-        return httpx.Response(500)
+        return httpx2.Response(500)
 
-    client = HttpClient(attempts=1, transport=httpx.MockTransport(handler))
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
 
     assert client.head_last_modified_date("https://example.test/data") is None
 
 
 def test_head_last_modified_date_none_when_header_absent():
     def handler(request):
-        return httpx.Response(200)
+        return httpx2.Response(200)
 
-    client = HttpClient(attempts=1, transport=httpx.MockTransport(handler))
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
 
     assert client.head_last_modified_date("https://example.test/data") is None
 
@@ -307,7 +307,7 @@ def test_async_head_last_modified_date_returns_date():
     from datetime import date
 
     handler = _download_handler_factory(b"abc")
-    client = AsyncHttpClient(attempts=1, transport=httpx.MockTransport(handler))
+    client = AsyncHttpClient(attempts=1, transport=httpx2.MockTransport(handler))
 
     async def run() -> object:
         return await client.head_last_modified_date("https://example.test/data")
@@ -321,12 +321,12 @@ def test_browser_headers_sent_when_configured():
     def handler(request):
         seen["user-agent"] = request.headers["user-agent"]
         seen["accept-language"] = request.headers["accept-language"]
-        return httpx.Response(200, content=b"ok")
+        return httpx2.Response(200, content=b"ok")
 
     client = HttpClient(
         attempts=1,
         headers=BROWSER_HEADERS,
-        transport=httpx.MockTransport(handler),
+        transport=httpx2.MockTransport(handler),
     )
     client.get_bytes("https://example.test/data")
 

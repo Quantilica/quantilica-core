@@ -14,7 +14,7 @@ from collections.abc import AsyncGenerator, Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-import httpx
+import httpx2
 
 from .exceptions import FetchError, StorageError
 from .files import check_free_space, ensure_parent, write_bytes_atomic
@@ -70,10 +70,10 @@ class RetryableHttpStatusError(HttpStatusError):
 
 
 DEFAULT_RETRY_EXCEPTIONS = (
-    httpx.TimeoutException,
-    httpx.ConnectError,
-    httpx.NetworkError,
-    httpx.RemoteProtocolError,
+    httpx2.TimeoutException,
+    httpx2.ConnectError,
+    httpx2.NetworkError,
+    httpx2.RemoteProtocolError,
     RetryableHttpStatusError,
     ConnectionError,
     TimeoutError,
@@ -81,7 +81,7 @@ DEFAULT_RETRY_EXCEPTIONS = (
 
 
 class HttpClient:
-    """Small synchronous HTTP client wrapper around ``httpx``."""
+    """Small synchronous HTTP client wrapper around ``httpx2``."""
 
     def __init__(
         self,
@@ -92,9 +92,9 @@ class HttpClient:
         attempts: int = 3,
         retry_base_delay: float = 1.0,
         verify: bool = True,
-        transport: httpx.BaseTransport | None = None,
+        transport: httpx2.BaseTransport | None = None,
         logger: logging.Logger | None = None,
-        cookies: httpx.Cookies | None = None,
+        cookies: httpx2.Cookies | None = None,
     ) -> None:
         default_headers = {"User-Agent": DEFAULT_USER_AGENT}
         if headers:
@@ -107,7 +107,7 @@ class HttpClient:
         self.verify = verify
         self.transport = transport
         self.logger = logger or get_logger(__name__)
-        self.cookies = cookies or httpx.Cookies()
+        self.cookies = cookies or httpx2.Cookies()
 
     def request(
         self,
@@ -119,7 +119,7 @@ class HttpClient:
         data: Any | None = None,
         content: bytes | None = None,
         json: Any | None = None,
-    ) -> httpx.Response:
+    ) -> httpx2.Response:
         """Perform an HTTP request with retries.
 
         Args:
@@ -132,19 +132,20 @@ class HttpClient:
             json: Optional JSON data.
 
         Returns:
-            httpx.Response: The HTTP response.
+            httpx2.Response: The HTTP response.
 
         Raises:
-            RetryableHttpStatusError: If a retryable status is received and attempts are exhausted.
+            RetryableHttpStatusError: If a retryable status is received and
+                attempts are exhausted.
             HttpStatusError: If a non-retryable error status is received.
         """
 
-        def do_request() -> httpx.Response:
+        def do_request() -> httpx2.Response:
             request_headers = dict(self.headers)
             if headers:
                 request_headers.update(headers)
             start = time.perf_counter()
-            with httpx.Client(
+            with httpx2.Client(
                 timeout=self.timeout,
                 follow_redirects=self.follow_redirects,
                 headers=request_headers,
@@ -170,7 +171,7 @@ class HttpClient:
                 raise RetryableHttpStatusError(str(response.url), response.status_code)
             try:
                 response.raise_for_status()
-            except httpx.HTTPStatusError as exc:
+            except httpx2.HTTPStatusError as exc:
                 raise HttpStatusError(str(response.url), response.status_code) from exc
             return response
 
@@ -187,7 +188,7 @@ class HttpClient:
         *,
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
-    ) -> httpx.Response:
+    ) -> httpx2.Response:
         """Fetch a URL and return the response.
 
         Args:
@@ -196,7 +197,7 @@ class HttpClient:
             headers: Optional headers.
 
         Returns:
-            httpx.Response: The HTTP response.
+            httpx2.Response: The HTTP response.
         """
         return self.request("GET", url, params=params, headers=headers)
 
@@ -206,7 +207,7 @@ class HttpClient:
         *,
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
-    ) -> httpx.Response:
+    ) -> httpx2.Response:
         """Perform a HEAD request and return the response.
 
         Args:
@@ -215,7 +216,7 @@ class HttpClient:
             headers: Optional headers.
 
         Returns:
-            httpx.Response: The HTTP response.
+            httpx2.Response: The HTTP response.
         """
         return self.request("HEAD", url, params=params, headers=headers)
 
@@ -225,7 +226,7 @@ class HttpClient:
         *,
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
-    ) -> httpx.Response:
+    ) -> httpx2.Response:
         """Perform a HEAD request, falling back to GET with streaming if unsupported.
 
         Some servers don't support HEAD requests (e.g. return 405 Method Not
@@ -239,7 +240,7 @@ class HttpClient:
             headers: Optional headers.
 
         Returns:
-            httpx.Response: The HTTP response.
+            httpx2.Response: The HTTP response.
         """
         try:
             return self.head(url, params=params, headers=headers)
@@ -250,8 +251,8 @@ class HttpClient:
         if headers:
             request_headers.update(headers)
 
-        def _stream_fallback() -> httpx.Response:
-            with httpx.Client(
+        def _stream_fallback() -> httpx2.Response:
+            with httpx2.Client(
                 timeout=self.timeout,
                 follow_redirects=self.follow_redirects,
                 headers=request_headers,
@@ -263,7 +264,7 @@ class HttpClient:
                     self.cookies.update(response.cookies)
                     try:
                         response.raise_for_status()
-                    except httpx.HTTPStatusError as exc:
+                    except httpx2.HTTPStatusError as exc:
                         raise HttpStatusError(
                             str(response.url), response.status_code
                         ) from exc
@@ -653,7 +654,7 @@ class HttpClient:
             data: Optional form data.
 
         Yields:
-            httpx.Response: The HTTP response stream.
+            httpx2.Response: The HTTP response stream.
 
         Raises:
             HttpStatusError: If a non-retryable error status is received.
@@ -661,7 +662,7 @@ class HttpClient:
         request_headers = dict(self.headers)
         if headers:
             request_headers.update(headers)
-        with httpx.Client(
+        with httpx2.Client(
             timeout=self.timeout,
             follow_redirects=self.follow_redirects,
             headers=request_headers,
@@ -673,14 +674,14 @@ class HttpClient:
                 self.cookies.update(response.cookies)
                 try:
                     response.raise_for_status()
-                except httpx.HTTPStatusError as exc:
+                except httpx2.HTTPStatusError as exc:
                     url_str = str(response.url)
                     raise HttpStatusError(url_str, response.status_code) from exc
                 yield response
 
 
 class AsyncHttpClient:
-    """Small asynchronous HTTP client wrapper around ``httpx``."""
+    """Small asynchronous HTTP client wrapper around ``httpx2``."""
 
     def __init__(
         self,
@@ -691,9 +692,9 @@ class AsyncHttpClient:
         attempts: int = 3,
         retry_base_delay: float = 1.0,
         verify: bool = True,
-        transport: httpx.AsyncBaseTransport | None = None,
+        transport: httpx2.AsyncBaseTransport | None = None,
         logger: logging.Logger | None = None,
-        cookies: httpx.Cookies | None = None,
+        cookies: httpx2.Cookies | None = None,
     ) -> None:
         default_headers = {"User-Agent": DEFAULT_USER_AGENT}
         if headers:
@@ -706,7 +707,7 @@ class AsyncHttpClient:
         self.verify = verify
         self.transport = transport
         self.logger = logger or get_logger(__name__)
-        self.cookies = cookies or httpx.Cookies()
+        self.cookies = cookies or httpx2.Cookies()
 
     async def request(
         self,
@@ -718,7 +719,7 @@ class AsyncHttpClient:
         data: Any | None = None,
         content: bytes | None = None,
         json: Any | None = None,
-    ) -> httpx.Response:
+    ) -> httpx2.Response:
         """Perform an HTTP request with retries.
 
         Args:
@@ -731,19 +732,20 @@ class AsyncHttpClient:
             json: Optional JSON data.
 
         Returns:
-            httpx.Response: The HTTP response.
+            httpx2.Response: The HTTP response.
 
         Raises:
-            RetryableHttpStatusError: If a retryable status is received and attempts are exhausted.
+            RetryableHttpStatusError: If a retryable status is received and
+                attempts are exhausted.
             HttpStatusError: If a non-retryable error status is received.
         """
 
-        async def do_request() -> httpx.Response:
+        async def do_request() -> httpx2.Response:
             request_headers = dict(self.headers)
             if headers:
                 request_headers.update(headers)
             start = time.perf_counter()
-            async with httpx.AsyncClient(
+            async with httpx2.AsyncClient(
                 timeout=self.timeout,
                 follow_redirects=self.follow_redirects,
                 headers=request_headers,
@@ -769,7 +771,7 @@ class AsyncHttpClient:
                 raise RetryableHttpStatusError(str(response.url), response.status_code)
             try:
                 response.raise_for_status()
-            except httpx.HTTPStatusError as exc:
+            except httpx2.HTTPStatusError as exc:
                 raise HttpStatusError(str(response.url), response.status_code) from exc
             return response
 
@@ -786,7 +788,7 @@ class AsyncHttpClient:
         *,
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
-    ) -> httpx.Response:
+    ) -> httpx2.Response:
         """Fetch a URL and return the response.
 
         Args:
@@ -795,7 +797,7 @@ class AsyncHttpClient:
             headers: Optional headers.
 
         Returns:
-            httpx.Response: The HTTP response.
+            httpx2.Response: The HTTP response.
         """
         return await self.request("GET", url, params=params, headers=headers)
 
@@ -805,7 +807,7 @@ class AsyncHttpClient:
         *,
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
-    ) -> httpx.Response:
+    ) -> httpx2.Response:
         """Perform a HEAD request and return the response.
 
         Args:
@@ -814,7 +816,7 @@ class AsyncHttpClient:
             headers: Optional headers.
 
         Returns:
-            httpx.Response: The HTTP response.
+            httpx2.Response: The HTTP response.
         """
         return await self.request("HEAD", url, params=params, headers=headers)
 
@@ -824,7 +826,7 @@ class AsyncHttpClient:
         *,
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
-    ) -> httpx.Response:
+    ) -> httpx2.Response:
         """Perform a HEAD request, falling back to GET with streaming if unsupported.
 
         Some servers don't support HEAD requests. This method tries HEAD first,
@@ -837,7 +839,7 @@ class AsyncHttpClient:
             headers: Optional headers.
 
         Returns:
-            httpx.Response: The HTTP response.
+            httpx2.Response: The HTTP response.
         """
         try:
             return await self.head(url, params=params, headers=headers)
@@ -848,8 +850,8 @@ class AsyncHttpClient:
         if headers:
             request_headers.update(headers)
 
-        async def _stream_fallback() -> httpx.Response:
-            async with httpx.AsyncClient(
+        async def _stream_fallback() -> httpx2.Response:
+            async with httpx2.AsyncClient(
                 timeout=self.timeout,
                 follow_redirects=self.follow_redirects,
                 headers=request_headers,
@@ -861,7 +863,7 @@ class AsyncHttpClient:
                     self.cookies.update(response.cookies)
                     try:
                         response.raise_for_status()
-                    except httpx.HTTPStatusError as exc:
+                    except httpx2.HTTPStatusError as exc:
                         raise HttpStatusError(
                             str(response.url), response.status_code
                         ) from exc
@@ -1177,7 +1179,7 @@ class AsyncHttpClient:
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
         data: Any | None = None,
-    ) -> AsyncGenerator[httpx.Response, None]:
+    ) -> AsyncGenerator[httpx2.Response, None]:
         """Open a streaming HTTP request asynchronously.
 
         Args:
@@ -1188,7 +1190,7 @@ class AsyncHttpClient:
             data: Optional form data.
 
         Yields:
-            httpx.Response: The HTTP response stream.
+            httpx2.Response: The HTTP response stream.
 
         Raises:
             HttpStatusError: If a non-retryable error status is received.
@@ -1196,7 +1198,7 @@ class AsyncHttpClient:
         request_headers = dict(self.headers)
         if headers:
             request_headers.update(headers)
-        async with httpx.AsyncClient(
+        async with httpx2.AsyncClient(
             timeout=self.timeout,
             follow_redirects=self.follow_redirects,
             headers=request_headers,
@@ -1206,7 +1208,7 @@ class AsyncHttpClient:
             async with client.stream(method, url, params=params) as response:
                 try:
                     response.raise_for_status()
-                except httpx.HTTPStatusError as exc:
+                except httpx2.HTTPStatusError as exc:
                     url_str = str(response.url)
                     raise HttpStatusError(url_str, response.status_code) from exc
                 yield response
@@ -1258,7 +1260,7 @@ def _write_manifest(
 
 
 def _is_remote_more_recent(
-    response: httpx.Response,
+    response: httpx2.Response,
     local_path: Path,
     *,
     check_size: bool = True,
