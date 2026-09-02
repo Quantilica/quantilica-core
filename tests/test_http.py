@@ -332,3 +332,116 @@ def test_browser_headers_sent_when_configured():
 
     assert "Chrome" in seen["user-agent"]
     assert seen["accept-language"].startswith("pt-BR")
+
+
+def test_http_client_emulate_browser_uses_browser_headers():
+    seen: dict[str, str] = {}
+
+    def handler(request):
+        seen["user-agent"] = request.headers["user-agent"]
+        seen["accept"] = request.headers["accept"]
+        seen["accept-language"] = request.headers.get("accept-language", "")
+        seen["accept-encoding"] = request.headers.get("accept-encoding", "")
+        return httpx2.Response(200, content=b"ok")
+
+    client = HttpClient(
+        attempts=1, emulate_browser=True, transport=httpx2.MockTransport(handler)
+    )
+    client.get_bytes("https://example.test/data")
+
+    assert "Chrome" in seen["user-agent"]
+    assert seen["accept-language"].startswith("pt-BR")
+    # Accept-Encoding seguro — nunca br/zstd
+    assert "gzip" in seen["accept-encoding"]
+    assert "br" not in seen["accept-encoding"]
+    assert "zstd" not in seen["accept-encoding"]
+
+
+def test_http_client_context_manager_reuses_pool():
+    calls: list[str] = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        return httpx2.Response(200, content=b"ok")
+
+    transport = httpx2.MockTransport(handler)
+    client = HttpClient(attempts=1, transport=transport)
+
+    # Fora do with — modo efêmero (backward compat)
+    client.get_bytes("https://example.test/a")
+    assert calls == ["/a"]
+    assert client._client is None  # efêmero não mantém sessão
+
+    # Dentro do with — pooling
+    with client as c:
+        assert c is client
+        assert c._client is not None
+        inner = c._client
+        c.get_bytes("https://example.test/b")
+        c.get_bytes("https://example.test/c")
+        # Mesma instância de httpx2.Client reutilizada
+        assert c._client is inner
+    # Ao sair, pool fechado
+    assert client._client is None
+    assert calls == ["/a", "/b", "/c"]
+
+
+def test_http_client_close_explicit():
+    def handler(request):
+        return httpx2.Response(200, content=b"ok")
+
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
+    client.__enter__()
+    assert client._client is not None
+    client.close()
+    assert client._client is None
+    # Após close, modo efêmero ainda funciona
+    client.get_bytes("https://example.test/data")
+
+
+def test_http_client_limits_configurable():
+    limits = httpx2.Limits(max_connections=10, max_keepalive_connections=5)
+    client = HttpClient(attempts=1, limits=limits)
+    assert client.limits is limits
+    # Default quando não informado
+    c2 = HttpClient(attempts=1)
+    assert c2.limits.max_connections == 50
+
+
+def test_async_http_client_context_manager():
+    async def run():
+        calls: list[str] = []
+
+        def handler(request):
+            calls.append(request.url.path)
+            return httpx2.Response(200, content=b"ok")
+
+        client = AsyncHttpClient(attempts=1, transport=httpx2.MockTransport(handler))
+        # Fora do contexto — efêmero
+        await client.get_bytes("https://example.test/a")
+        assert client._async_client is None
+
+        async with client as c:
+            assert c._async_client is not None
+            inner = c._async_client
+            await c.get_bytes("https://example.test/b")
+            await c.get_bytes("https://example.test/c")
+            assert c._async_client is inner
+        assert client._async_client is None
+        assert calls == ["/a", "/b", "/c"]
+
+    asyncio.run(run())
+
+
+def test_async_http_client_aclose():
+    async def run():
+        def handler(request):
+            return httpx2.Response(200, content=b"ok")
+
+        client = AsyncHttpClient(attempts=1, transport=httpx2.MockTransport(handler))
+        await client.__aenter__()
+        assert client._async_client is not None
+        await client.aclose()
+        assert client._async_client is None
+
+    asyncio.run(run())

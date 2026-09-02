@@ -34,6 +34,10 @@ DEFAULT_USER_AGENT = "quantilica-core"
 DEFAULT_TIMEOUT = 60.0
 RETRY_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
+DEFAULT_LIMITS = httpx2.Limits(
+    max_connections=50, max_keepalive_connections=20, keepalive_expiry=30.0
+)
+
 # Realistic browser headers for sites that reject non-browser User-Agents
 # (e.g. some Brazilian government portals served behind WAFs).
 BROWSER_HEADERS: dict[str, str] = {
@@ -95,10 +99,24 @@ class HttpClient:
         transport: httpx2.BaseTransport | None = None,
         logger: logging.Logger | None = None,
         cookies: httpx2.Cookies | None = None,
+        limits: httpx2.Limits | None = None,
+        emulate_browser: bool = False,
     ) -> None:
-        default_headers = {"User-Agent": DEFAULT_USER_AGENT}
-        if headers:
-            default_headers.update(headers)
+        if emulate_browser:
+            default_headers: dict[str, str] = dict(BROWSER_HEADERS)
+            # Accept-Encoding seguro: nunca anunciar br/zstd (BCB retorna 406).
+            default_headers.setdefault("Accept-Encoding", "gzip, deflate")
+            if headers:
+                default_headers.update(headers)
+            # Garante que Accept-Encoding não seja sobrescrito com br/zstd.
+            if "Accept-Encoding" in (headers or {}):
+                ae = (headers or {}).get("Accept-Encoding", "")
+                if "br" in ae or "zstd" in ae:
+                    default_headers["Accept-Encoding"] = "gzip, deflate"
+        else:
+            default_headers = {"User-Agent": DEFAULT_USER_AGENT}
+            if headers:
+                default_headers.update(headers)
         self.timeout = timeout
         self.headers = default_headers
         self.follow_redirects = follow_redirects
@@ -108,6 +126,41 @@ class HttpClient:
         self.transport = transport
         self.logger = logger or get_logger(__name__)
         self.cookies = cookies or httpx2.Cookies()
+        self.limits = limits or DEFAULT_LIMITS
+        self.emulate_browser = emulate_browser
+        self._client: httpx2.Client | None = None
+
+    def _build_client(self) -> httpx2.Client:
+        return httpx2.Client(
+            timeout=self.timeout,
+            follow_redirects=self.follow_redirects,
+            headers=self.headers,
+            verify=self.verify,
+            transport=self.transport,
+            cookies=self.cookies,
+            limits=self.limits,
+        )
+
+    def _get_client(self) -> tuple[httpx2.Client, bool]:
+        """Retorna (client, is_persistent)."""  # noqa: E501
+        if self._client is not None:
+            return self._client, True
+        return self._build_client(), False
+
+    def __enter__(self) -> HttpClient:
+        if self._client is None:
+            self._client = self._build_client()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        if self._client is not None:
+            try:
+                self._client.close()
+            finally:
+                self._client = None
 
     def request(
         self,
@@ -141,22 +194,31 @@ class HttpClient:
         """
 
         def do_request() -> httpx2.Response:
-            request_headers = dict(self.headers)
-            if headers:
-                request_headers.update(headers)
             start = time.perf_counter()
-            with httpx2.Client(
-                timeout=self.timeout,
-                follow_redirects=self.follow_redirects,
-                headers=request_headers,
-                verify=self.verify,
-                transport=self.transport,
-                cookies=self.cookies,
-            ) as client:
+            client, is_persistent = self._get_client()
+            if is_persistent:
                 response = client.request(
-                    method, url, params=params, data=data, content=content, json=json
+                    method,
+                    url,
+                    params=params,
+                    headers=headers,
+                    data=data,
+                    content=content,
+                    json=json,  # noqa: E501
                 )
                 self.cookies.update(response.cookies)
+            else:
+                with client as c:
+                    response = c.request(
+                        method,
+                        url,
+                        params=params,
+                        headers=headers,
+                        data=data,
+                        content=content,
+                        json=json,  # noqa: E501
+                    )
+                    self.cookies.update(response.cookies)
             elapsed = time.perf_counter() - start
             self.logger.debug(
                 bind_context(
@@ -659,18 +721,11 @@ class HttpClient:
         Raises:
             HttpStatusError: If a non-retryable error status is received.
         """
-        request_headers = dict(self.headers)
-        if headers:
-            request_headers.update(headers)
-        with httpx2.Client(
-            timeout=self.timeout,
-            follow_redirects=self.follow_redirects,
-            headers=request_headers,
-            verify=self.verify,
-            transport=self.transport,
-            cookies=self.cookies,
-        ) as client:
-            with client.stream(method, url, params=params, data=data) as response:
+        if self._client is not None:
+            # Sessão persistente — reusa o pool.
+            with self._client.stream(
+                method, url, params=params, headers=headers, data=data
+            ) as response:  # noqa: E501
                 self.cookies.update(response.cookies)
                 try:
                     response.raise_for_status()
@@ -678,6 +733,27 @@ class HttpClient:
                     url_str = str(response.url)
                     raise HttpStatusError(url_str, response.status_code) from exc
                 yield response
+        else:
+            request_headers = dict(self.headers)
+            if headers:
+                request_headers.update(headers)
+            with httpx2.Client(
+                timeout=self.timeout,
+                follow_redirects=self.follow_redirects,
+                headers=request_headers,
+                verify=self.verify,
+                transport=self.transport,
+                cookies=self.cookies,
+                limits=self.limits,
+            ) as client:
+                with client.stream(method, url, params=params, data=data) as response:
+                    self.cookies.update(response.cookies)
+                    try:
+                        response.raise_for_status()
+                    except httpx2.HTTPStatusError as exc:
+                        url_str = str(response.url)
+                        raise HttpStatusError(url_str, response.status_code) from exc
+                    yield response
 
 
 class AsyncHttpClient:
@@ -695,10 +771,22 @@ class AsyncHttpClient:
         transport: httpx2.AsyncBaseTransport | None = None,
         logger: logging.Logger | None = None,
         cookies: httpx2.Cookies | None = None,
+        limits: httpx2.Limits | None = None,
+        emulate_browser: bool = False,
     ) -> None:
-        default_headers = {"User-Agent": DEFAULT_USER_AGENT}
-        if headers:
-            default_headers.update(headers)
+        if emulate_browser:
+            default_headers: dict[str, str] = dict(BROWSER_HEADERS)
+            default_headers.setdefault("Accept-Encoding", "gzip, deflate")
+            if headers:
+                default_headers.update(headers)
+            if "Accept-Encoding" in (headers or {}):
+                ae = (headers or {}).get("Accept-Encoding", "")
+                if "br" in ae or "zstd" in ae:
+                    default_headers["Accept-Encoding"] = "gzip, deflate"
+        else:
+            default_headers = {"User-Agent": DEFAULT_USER_AGENT}
+            if headers:
+                default_headers.update(headers)
         self.timeout = timeout
         self.headers = default_headers
         self.follow_redirects = follow_redirects
@@ -708,6 +796,40 @@ class AsyncHttpClient:
         self.transport = transport
         self.logger = logger or get_logger(__name__)
         self.cookies = cookies or httpx2.Cookies()
+        self.limits = limits or DEFAULT_LIMITS
+        self.emulate_browser = emulate_browser
+        self._async_client: httpx2.AsyncClient | None = None
+
+    def _build_async_client(self) -> httpx2.AsyncClient:
+        return httpx2.AsyncClient(
+            timeout=self.timeout,
+            follow_redirects=self.follow_redirects,
+            headers=self.headers,
+            verify=self.verify,
+            transport=self.transport,
+            cookies=self.cookies,
+            limits=self.limits,
+        )
+
+    def _get_async_client(self) -> tuple[httpx2.AsyncClient, bool]:
+        if self._async_client is not None:
+            return self._async_client, True
+        return self._build_async_client(), False
+
+    async def __aenter__(self) -> AsyncHttpClient:
+        if self._async_client is None:
+            self._async_client = self._build_async_client()
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.aclose()
+
+    async def aclose(self) -> None:
+        if self._async_client is not None:
+            try:
+                await self._async_client.aclose()
+            finally:
+                self._async_client = None
 
     async def request(
         self,
@@ -741,22 +863,31 @@ class AsyncHttpClient:
         """
 
         async def do_request() -> httpx2.Response:
-            request_headers = dict(self.headers)
-            if headers:
-                request_headers.update(headers)
             start = time.perf_counter()
-            async with httpx2.AsyncClient(
-                timeout=self.timeout,
-                follow_redirects=self.follow_redirects,
-                headers=request_headers,
-                verify=self.verify,
-                transport=self.transport,
-                cookies=self.cookies,
-            ) as client:
+            client, is_persistent = self._get_async_client()
+            if is_persistent:
                 response = await client.request(
-                    method, url, params=params, data=data, content=content, json=json
+                    method,
+                    url,
+                    params=params,
+                    headers=headers,
+                    data=data,
+                    content=content,
+                    json=json,  # noqa: E501
                 )
                 self.cookies.update(response.cookies)
+            else:
+                async with client as c:
+                    response = await c.request(
+                        method,
+                        url,
+                        params=params,
+                        headers=headers,
+                        data=data,
+                        content=content,
+                        json=json,  # noqa: E501
+                    )
+                    self.cookies.update(response.cookies)
             elapsed = time.perf_counter() - start
             self.logger.debug(
                 bind_context(
@@ -1195,23 +1326,36 @@ class AsyncHttpClient:
         Raises:
             HttpStatusError: If a non-retryable error status is received.
         """
-        request_headers = dict(self.headers)
-        if headers:
-            request_headers.update(headers)
-        async with httpx2.AsyncClient(
-            timeout=self.timeout,
-            follow_redirects=self.follow_redirects,
-            headers=request_headers,
-            verify=self.verify,
-            transport=self.transport,
-        ) as client:
-            async with client.stream(method, url, params=params) as response:
+        if self._async_client is not None:
+            async with self._async_client.stream(
+                method, url, params=params, headers=headers, data=data
+            ) as response:  # noqa: E501
                 try:
                     response.raise_for_status()
                 except httpx2.HTTPStatusError as exc:
                     url_str = str(response.url)
                     raise HttpStatusError(url_str, response.status_code) from exc
                 yield response
+        else:
+            request_headers = dict(self.headers)
+            if headers:
+                request_headers.update(headers)
+            async with httpx2.AsyncClient(
+                timeout=self.timeout,
+                follow_redirects=self.follow_redirects,
+                headers=request_headers,
+                verify=self.verify,
+                transport=self.transport,
+                cookies=self.cookies,
+                limits=self.limits,
+            ) as client:
+                async with client.stream(method, url, params=params) as response:
+                    try:
+                        response.raise_for_status()
+                    except httpx2.HTTPStatusError as exc:
+                        url_str = str(response.url)
+                        raise HttpStatusError(url_str, response.status_code) from exc
+                    yield response
 
 
 def _open_atomic_temp(target: Path) -> tuple[int, Path]:
