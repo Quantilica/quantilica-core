@@ -5,6 +5,17 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.7.0] - 2026-09-02
+
+### Adicionado
+
+- `HttpClient` e `AsyncHttpClient` com pooling keep-alive (`httpx2.Limits` 50/20/30s), lifecycle `__enter__/__exit__/close` e `__aenter__/__aexit__/aclose`, `_build_client`/`_get_client`; `with HttpClient() as client:` reutiliza a mesma `httpx2.Client` (elimina 50-100 handshakes em lotes SIDRA/BCB), fora do `with` mantém modo efêmero 100% retrocompatível.
+- `emulate_browser: bool = False` — quando `True`, injeta `BROWSER_HEADERS` (Chrome 131, `Accept-Language: pt-BR`) com `Accept-Encoding` travado em `gzip, deflate` (previne `HTTP 406` do BCB).
+
+### Alterado
+
+- `stream()` e `head_or_get` com branch persistente quando em sessão.
+
 ## [0.6.0] - 2026-08-30
 
 ### Alterado
