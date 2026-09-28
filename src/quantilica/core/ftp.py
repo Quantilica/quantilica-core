@@ -9,9 +9,12 @@ import os
 import socket as _socket
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # evita ciclo pesado (http importa httpx2)
+    from .http import ProgressCallback
 
 from .exceptions import FetchError
 from .files import ensure_parent, write_stream_atomic
@@ -210,6 +213,29 @@ class FtpClient:
             jitter=self.retry_jitter,
         )
 
+    @contextlib.contextmanager
+    def _connected(self) -> Iterator[ftplib.FTP]:
+        """Abre conexão FTP cujo `quit()` de saída nunca mascara o resultado.
+
+        Exceções do corpo do `with` propagam intactas; só falhas do `quit()`
+        final são suprimidas (servidores como o IIS derrubam a conexão de
+        controle após o RETR com `550 network name no longer available` —
+        o download já íntegro não pode virar `FetchError` por isso).
+        """
+        ftp = self._open()
+        try:
+            yield ftp
+        except BaseException:
+            with contextlib.suppress(Exception):
+                ftp.close()
+            raise
+        else:
+            try:
+                ftp.quit()
+            except Exception:
+                with contextlib.suppress(Exception):
+                    ftp.close()
+
     def download_with_manifest(
         self,
         url: str,
@@ -220,7 +246,7 @@ class FtpClient:
         producer: str,
         force: bool = False,
         metadata: dict[str, Any] | None = None,
-        progress: Callable[[int], None] | None = None,
+        progress: ProgressCallback | None = None,
     ) -> Path:
         """Download a file from FTP; freshness check, streaming write, and manifest.
 
@@ -230,9 +256,10 @@ class FtpClient:
             source_id: The source identifier.
             dataset_id: The dataset identifier.
             producer: The producer name.
-            force: Whether to force download even if fresh.
-            metadata: Additional metadata.
-            progress: Progress callback function.
+        force: Whether to force download even if fresh.
+        metadata: Additional metadata.
+        progress: Progress callback function `(downloaded, total)` — mesmo
+            contrato de `ProgressCallback` do HTTP (`total=0` se desconhecido).
 
         Returns:
             Path: The path to the downloaded file.
@@ -245,7 +272,7 @@ class FtpClient:
             # Freshness probe — any failure falls through to download.
             if not force and target.exists():
                 with contextlib.suppress(Exception):
-                    with self._open() as ftp:
+                    with self._connected() as ftp:
                         mtime_str = ftp.sendcmd(f"MDTM {url}").split()[1]
                         remote_mtime = time.mktime(
                             time.strptime(mtime_str, "%Y%m%d%H%M%S")
@@ -257,14 +284,21 @@ class FtpClient:
             outcome: dict[str, Any] = {}
 
             def _attempt() -> None:
-                with self._open() as ftp:
+                with self._connected() as ftp:
                     try:
+                        # Total best-effort (SIZE pode não existir no servidor).
+                        total = 0
+                        with contextlib.suppress(Exception):
+                            total = int(ftp.size(url) or 0)
+                        downloaded = 0
 
                         def _stream(cb: Callable[[bytes], None]) -> None:
                             def _tracked(data: bytes) -> None:
+                                nonlocal downloaded
                                 cb(data)
                                 if progress is not None:
-                                    progress(len(data))
+                                    downloaded += len(data)
+                                    progress(downloaded, total)
 
                             ftp.retrbinary(f"RETR {url}", _tracked)
 
