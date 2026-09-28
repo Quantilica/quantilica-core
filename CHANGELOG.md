@@ -5,6 +5,13 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.7.1] - 2026-09-28
+
+### Corrigido
+
+- `FtpClient.download_with_manifest` passa a emitir o contrato canônico de progresso `progress(downloaded, total)` (`ProgressCallback`, igual ao HTTP) em vez de `progress(n)` — corrige `TypeError` que abortava todo download FTP com barra de progresso (datasus, pdet) no primeiro chunk.
+- Conexão FTP de saída (`_connected`) suprime falha de `quit()` pós-RETR (ex.: IIS com `550 network name no longer available`): download íntegro não vira mais `FetchError`; exceções do corpo propagam intactas.
+
 ## [0.7.0] - 2026-09-02
 
 ### Adicionado
