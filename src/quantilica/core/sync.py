@@ -68,6 +68,48 @@ class FreshnessProbe(Protocol):
         ...
 
 
+class IncrementalSyncStrategy:
+    """Canonical policy object wrapping :func:`should_skip`.
+
+    Encapsulates a skip policy (and optional ``force`` flag) so ingestion
+        pipelines delegate the "can I skip this download?" decision to a single
+        composable strategy instead of reimplementing heuristics.
+
+    Args:
+        policy: One of the policies accepted by :func:`should_skip`
+            (``freshness``, ``strict_manifest``, ``exists``, ``never``).
+        force: When True, skips are disabled (always re-download).
+    """
+
+    def __init__(
+        self,
+        policy: SkipPolicy = "freshness",
+        force: bool = False,
+    ) -> None:
+        self.policy: SkipPolicy = policy
+        self.force = force
+
+    def should_skip(
+        self, target_path: Path, remote_stat: RemoteStat | None = None
+    ) -> bool:
+        """Decide whether the download of ``target_path`` can be skipped.
+
+        Args:
+            target_path: The local artifact path.
+            remote_stat: Remote metadata from a probe (may be None; only the
+                ``freshness`` policy uses it).
+
+        Returns:
+            bool: True when the (re)download can be skipped.
+        """
+        return should_skip(
+            target_path,
+            remote_stat,
+            policy=self.policy,
+            force=self.force,
+        )
+
+
 class HttpFreshnessProbe:
     """Freshness probe backed by a :class:`~quantilica.core.http.HttpClient`.
 

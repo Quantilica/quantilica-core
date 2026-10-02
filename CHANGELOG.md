@@ -5,6 +5,12 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.8.1] - 2026-10-02
+
+### Adicionado
+
+- `sync`: `IncrementalSyncStrategy(policy, force)` — wrapper canônico de política incremental sobre `should_skip` (método `strategy.should_skip(target_path, remote_stat=...)`), para pipelines delegarem a decisão de skip a um único objeto de política. Exportado também via `quantilica.core`.
+
 ## [0.8.0] - 2026-10-02
 
 ### Adicionado

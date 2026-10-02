@@ -11,6 +11,7 @@ from quantilica.core import (
     FreshnessProbe,
     FtpFreshnessProbe,
     HttpFreshnessProbe,
+    IncrementalSyncStrategy,
     RemoteStat,
     is_manifest_valid,
     should_skip,
@@ -384,6 +385,35 @@ def test_is_manifest_valid_false_for_corrupt_json(tmp_path):
 def test_manifest_target_path_round_trip():
     manifest_path = Path("a/b/data.bin.manifest.json")
     assert manifest_target_path(manifest_path).name == "data.bin"
+
+
+# ---------------------------------------------------------------------------
+# IncrementalSyncStrategy
+
+
+def test_incremental_sync_strategy_strict_manifest_skips_valid(tmp_path):
+    target = _make_target_with_manifest(tmp_path, content=b"payload")
+
+    strategy = IncrementalSyncStrategy(policy="strict_manifest")
+
+    assert strategy.should_skip(target_path=target) is True
+    assert strategy.should_skip(target_path=target.with_name("missing.bin")) is False
+
+
+def test_incremental_sync_strategy_never_never_skips(tmp_path):
+    target = _make_target_with_manifest(tmp_path)
+
+    strategy = IncrementalSyncStrategy(policy="never")
+
+    assert strategy.should_skip(target_path=target) is False
+
+
+def test_incremental_sync_strategy_force_never_skips(tmp_path):
+    target = _make_target_with_manifest(tmp_path)
+
+    strategy = IncrementalSyncStrategy(policy="strict_manifest", force=True)
+
+    assert strategy.should_skip(target_path=target) is False
 
 
 # ---------------------------------------------------------------------------
