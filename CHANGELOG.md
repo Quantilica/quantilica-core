@@ -5,6 +5,14 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.8.0] - 2026-10-02
+
+### Adicionado
+
+- `sync`: novo módulo de sincronização com `RemoteStat` (metadata remota normalizada: `size`, `last_modified`, `etag`), protocolo `FreshnessProbe`, probes concretos `HttpFreshnessProbe` (HEAD com fallback GET; captura `Content-Length`/`Last-Modified`/`ETag`) e `FtpFreshnessProbe` (`SIZE`/`MDTM` sobre `FtpClient`, MDTM interpretado como UTC), `should_skip(target, stat, policy, force)` com políticas `freshness` (padrão), `strict_manifest`, `exists` e `never`, e `is_manifest_valid(manifest_path)` (valida `sha256` + `size_bytes` do sidecar contra o artefato em disco). Símbolos exportados também via `quantilica.core`.
+- `manifests`: `write_manifest_sidecar(target, manifest)` pública, que grava o sidecar no formato `<target>.manifest.json` (escrita atômica) e retorna o `Path`; `manifest_sidecar_path` e constante `MANIFEST_SIDECAR_SUFFIX` auxiliares; alias `ExecutionManifest = RunManifest` para compatibilidade (`http.py` e `ftp.py` reutilizam o helper).
+- `HttpClient`: parâmetro `min_interval: float = 0.0` (rate-limiting thread-safe por requisição) com `_RateLimiter` nativo — o lock rápido só reserva o próximo slot e o `sleep` acontece fora do lock; rate-limit aplicado em `request`, `stream` e no fallback GET de `head_or_get`.
+
 ## [0.7.1] - 2026-09-28
 
 ### Corrigido
