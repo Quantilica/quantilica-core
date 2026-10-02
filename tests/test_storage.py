@@ -160,3 +160,20 @@ def test_stamped_repo_get_all_latest_stamped_files(tmp_path):
 def test_stamped_repo_get_all_latest_stamped_files_empty(tmp_path):
     repo = StampedDataRepository(tmp_path)
     assert repo.get_all_latest_stamped_files("nonexistent") == []
+
+
+def test_stamped_repo_ignores_manifest_sidecars(tmp_path):
+    repo = StampedDataRepository(tmp_path)
+    d = repo.dataset_path("data")
+    d.mkdir(parents=True)
+    (d / "series_1@20250101T000000.json").write_text("[]")
+    (d / "series_1@20250101T000000.json.manifest.json").write_text("{}")
+    (d / "series_1@20250601T000000.json").write_text("[]")
+    (d / "series_1@20250601T000000.json.manifest.json").write_text("{}")
+
+    latest = repo.get_latest_stamped_file("data", "series_1", ext="json")
+    assert latest is not None
+    assert latest.name == "series_1@20250601T000000.json"
+
+    all_latest = repo.get_all_latest_stamped_files("data", ext="json")
+    assert [f.name for f in all_latest] == ["series_1@20250601T000000.json"]

@@ -152,6 +152,8 @@ class StampedDataRepository(BaseDataRepository):
         for f in dataset_dir.iterdir():
             if not f.is_file():
                 continue
+            if f.name.endswith(".manifest.json") or f.name.endswith(f".manifest.{ext}"):
+                continue
             if not (f.name.startswith(f"{slug}@") and f.name.endswith(f".{ext}")):
                 continue
             ts = f.name[len(slug) + 1 : -(len(ext) + 1)]
@@ -177,6 +179,8 @@ class StampedDataRepository(BaseDataRepository):
             return []
         by_slug: dict[str, tuple[Path, str]] = {}
         for f in dataset_dir.glob(f"*.{ext}"):
+            if f.name.endswith(".manifest.json") or f.name.endswith(f".manifest.{ext}"):
+                continue
             if "@" not in f.name:
                 continue
             slug, _, rest = f.name.partition("@")
