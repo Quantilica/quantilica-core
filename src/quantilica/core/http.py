@@ -9,6 +9,7 @@ import hashlib
 import logging
 import os
 import tempfile
+import threading
 import time
 from collections.abc import AsyncGenerator, Callable, Mapping
 from pathlib import Path
@@ -19,7 +20,7 @@ import httpx2
 from .exceptions import FetchError, StorageError
 from .files import check_free_space, ensure_parent, write_bytes_atomic
 from .logging import bind_context, get_logger, log_step
-from .manifests import DownloadManifest
+from .manifests import DownloadManifest, write_manifest_sidecar
 from .retry import async_retry_call, retry_call
 
 ProgressCallback = Callable[[int, int], None]
@@ -84,6 +85,43 @@ DEFAULT_RETRY_EXCEPTIONS = (
 )
 
 
+class _RateLimiter:
+    """Thread-safe minimal rate limiter (fixed spacing between slots).
+
+    A fast lock is held only to reserve the next available slot; the actual
+    wait (if any) happens outside the lock, so concurrent threads never block
+    each other while sleeping.
+    """
+
+    def __init__(self, min_interval: float) -> None:
+        """Initialize the rate limiter.
+
+        Args:
+            min_interval: Minimum spacing in seconds between consecutive
+                slots. A value of ``0`` disables waiting entirely.
+        """
+        self.min_interval = min_interval
+        self._lock = threading.Lock()
+        self._next_slot = 0.0
+
+    def acquire(self) -> None:
+        """Reserve the next rate-limited slot, sleeping if needed.
+
+        Returns:
+            None
+        """
+        if self.min_interval <= 0:
+            return
+        clock = time.monotonic
+        with self._lock:
+            now = clock()
+            slot = self._next_slot if self._next_slot > now else now
+            delay = slot - now
+            self._next_slot = slot + self.min_interval
+        if delay > 0:
+            time.sleep(delay)
+
+
 class HttpClient:
     """Small synchronous HTTP client wrapper around ``httpx2``."""
 
@@ -101,6 +139,7 @@ class HttpClient:
         cookies: httpx2.Cookies | None = None,
         limits: httpx2.Limits | None = None,
         emulate_browser: bool = False,
+        min_interval: float = 0.0,
     ) -> None:
         if emulate_browser:
             default_headers: dict[str, str] = dict(BROWSER_HEADERS)
@@ -128,6 +167,8 @@ class HttpClient:
         self.cookies = cookies or httpx2.Cookies()
         self.limits = limits or DEFAULT_LIMITS
         self.emulate_browser = emulate_browser
+        self.min_interval = min_interval
+        self._rate_limiter = _RateLimiter(min_interval)
         self._client: httpx2.Client | None = None
 
     def _build_client(self) -> httpx2.Client:
@@ -194,6 +235,7 @@ class HttpClient:
         """
 
         def do_request() -> httpx2.Response:
+            self._rate_limiter.acquire()
             start = time.perf_counter()
             client, is_persistent = self._get_client()
             if is_persistent:
@@ -314,6 +356,7 @@ class HttpClient:
             request_headers.update(headers)
 
         def _stream_fallback() -> httpx2.Response:
+            self._rate_limiter.acquire()
             with httpx2.Client(
                 timeout=self.timeout,
                 follow_redirects=self.follow_redirects,
@@ -721,6 +764,7 @@ class HttpClient:
         Raises:
             HttpStatusError: If a non-retryable error status is received.
         """
+        self._rate_limiter.acquire()
         if self._client is not None:
             # Sessão persistente — reusa o pool.
             with self._client.stream(
@@ -1399,8 +1443,7 @@ def _write_manifest(
         path=str(target.absolute()),
         producer=producer,
     )
-    manifest_path = target.with_suffix(target.suffix + ".manifest.json")
-    manifest.write_json(manifest_path)
+    write_manifest_sidecar(target, manifest)
 
 
 def _is_remote_more_recent(

@@ -271,9 +271,45 @@ class DownloadManifest:
             path: The path to write to.
 
         Returns:
-            Path: The path to the written file.
+            Path: The written file path.
         """
         return write_text_atomic(path, self.to_json())
+
+
+MANIFEST_SIDECAR_SUFFIX = ".manifest.json"
+"""Suffix appended to a target path to build its manifest sidecar name."""
+
+
+def manifest_sidecar_path(target: str | Path) -> Path:
+    """Return the sidecar path ``<target>.manifest.json`` for ``target``.
+
+    Args:
+        target: Path of the downloaded artifact.
+
+    Returns:
+        Path: The sidecar manifest path (e.g. ``data.bin.manifest.json``).
+    """
+    target_path = Path(target)
+    return target_path.with_suffix(target_path.suffix + MANIFEST_SIDECAR_SUFFIX)
+
+
+def write_manifest_sidecar(
+    target: str | Path,
+    manifest: DownloadManifest,
+) -> Path:
+    """Write a download manifest sidecar next to the target file.
+
+    The sidecar is written atomically as ``<target>.manifest.json``
+    (e.g. ``data.bin`` gets ``data.bin.manifest.json``).
+
+    Args:
+        target: Path of the downloaded artifact.
+        manifest: The manifest describing the artifact.
+
+    Returns:
+        Path: The sidecar path that was written.
+    """
+    return manifest.write_json(manifest_sidecar_path(target))
 
 
 @dataclass(frozen=True)
@@ -463,3 +499,7 @@ class RunManifest:
             Path: The written file path.
         """
         return write_text_atomic(path, self.to_json())
+
+
+ExecutionManifest = RunManifest
+"""Alias kept for backwards compatibility with older imports."""

@@ -1,7 +1,10 @@
 import asyncio
 import hashlib
 import json
+import threading
+import time
 from pathlib import Path
+from tempfile import mkdtemp
 
 import httpx2
 import pytest
@@ -445,3 +448,102 @@ def test_async_http_client_aclose():
         assert client._async_client is None
 
     asyncio.run(run())
+
+
+def test_http_client_min_interval_defaults_to_zero():
+    client = HttpClient(attempts=1)
+    assert client.min_interval == 0.0
+
+
+def test_rate_limiter_disabled_for_zero_interval(monkeypatch):
+    import quantilica.core.http as http_mod
+
+    def _fail_sleep(seconds):
+        raise AssertionError(f"sleep({seconds}) should not be called")
+
+    monkeypatch.setattr(http_mod.time, "sleep", _fail_sleep)
+    limiter = http_mod._RateLimiter(0.0)
+    limiter.acquire()
+    limiter.acquire()
+
+
+def test_rate_limiter_schedules_spaced_slots(monkeypatch):
+    import quantilica.core.http as http_mod
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(http_mod.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    limiter = http_mod._RateLimiter(0.1)
+    limiter.acquire()
+    limiter.acquire()
+    limiter.acquire()
+    limiter.acquire()
+
+    sorted_sleeps = sorted(sleeps)
+    assert sorted_sleeps == pytest.approx([0.1, 0.2, 0.3], abs=0.02)
+
+
+def test_rate_limiter_thread_safe_spacing(monkeypatch):
+    import quantilica.core.http as http_mod
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(http_mod.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    limiter = http_mod._RateLimiter(0.1)
+    threads = [threading.Thread(target=limiter.acquire) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    sorted_sleeps = sorted(sleeps)
+    assert sorted_sleeps == pytest.approx([0.1, 0.2, 0.3], abs=0.02)
+
+
+def test_http_client_rate_limits_sequential_requests():
+    count = 0
+
+    def handler(request):
+        nonlocal count
+        count += 1
+        return httpx2.Response(200, content=b"ok")
+
+    client = HttpClient(
+        attempts=1,
+        min_interval=0.05,
+        transport=httpx2.MockTransport(handler),
+    )
+    started = time.monotonic()
+    client.get("https://example.test/a")
+    client.get("https://example.test/b")
+    client.get("https://example.test/c")
+    elapsed = time.monotonic() - started
+
+    assert count == 3
+    # Três requisições => dois intervalos mínimos entre slots.
+    assert elapsed >= 0.095
+
+
+def test_http_client_rate_limits_stream_requests():
+    payload = b"x" * (100 * 1024)
+    handler = _download_handler_factory(payload)
+    client = HttpClient(
+        attempts=1,
+        min_interval=0.05,
+        transport=httpx2.MockTransport(handler),
+    )
+    target = Path(mkdtemp()) / "data.bin"
+    started = time.monotonic()
+    out = client.download_with_manifest(
+        "https://example.test/data",
+        target,
+        source_id="src",
+        dataset_id="ds",
+        producer="test",
+    )
+    elapsed = time.monotonic() - started
+
+    assert out == target
+    assert out.read_bytes() == payload
+    # HEAD (freshness) + GET (stream) => pelo menos um intervalo.
+    assert elapsed >= 0.049

@@ -19,7 +19,7 @@ if TYPE_CHECKING:  # evita ciclo pesado (http importa httpx2)
 from .exceptions import FetchError
 from .files import ensure_parent, write_stream_atomic
 from .logging import get_logger, log_step
-from .manifests import DownloadManifest
+from .manifests import DownloadManifest, write_manifest_sidecar
 from .retry import exponential_delay, retry_call
 
 _logger = get_logger(__name__)
@@ -326,7 +326,7 @@ class FtpClient:
                 producer=producer,
                 metadata=metadata or {},
             )
-            manifest.write_json(target.with_suffix(target.suffix + ".manifest.json"))
+            write_manifest_sidecar(target, manifest)
             return target
 
     def list_files(

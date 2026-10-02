@@ -12,6 +12,7 @@ from quantilica.core.manifests import (
     QualitySignals,
     RunManifest,
     SourceMetadata,
+    write_manifest_sidecar,
 )
 
 
@@ -174,3 +175,43 @@ def test_run_manifest_start_and_finish():
     assert finished.status == "success"
     assert finished.finished_at is not None
     assert finished.started_at == run.started_at
+
+
+def test_write_manifest_sidecar_naming_and_payload(tmp_path):
+    manifest = DownloadManifest.from_content(
+        source_id="ibge",
+        dataset_id="sidra-ipca",
+        url="https://example.test/data.bin",
+        content=b"abc",
+    )
+    target = tmp_path / "data.bin"
+    target.write_bytes(b"abc")
+
+    sidecar = write_manifest_sidecar(target, manifest)
+
+    assert sidecar == tmp_path / "data.bin.manifest.json"
+    assert sidecar.exists()
+    payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert payload["sha256"] == sha256_bytes(b"abc")
+    assert payload["size_bytes"] == 3
+
+
+def test_write_manifest_sidecar_accepts_str_target_and_no_suffix(tmp_path):
+    manifest = DownloadManifest.from_content(
+        source_id="ibge",
+        dataset_id="sidra-ipca",
+        url="https://example.test/data",
+        content=b"abc",
+    )
+    target = tmp_path / "data"
+
+    sidecar = write_manifest_sidecar(str(target), manifest)
+
+    assert sidecar == tmp_path / "data.manifest.json"
+    assert sidecar.exists()
+
+
+def test_execution_manifest_alias_is_run_manifest():
+    from quantilica.core.manifests import ExecutionManifest, RunManifest
+
+    assert ExecutionManifest is RunManifest
