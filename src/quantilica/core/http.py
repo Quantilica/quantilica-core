@@ -187,9 +187,17 @@ class HttpClient:
         self.cookies = cookies or httpx2.Cookies()
         self.limits = limits or DEFAULT_LIMITS
         self.emulate_browser = emulate_browser
-        self.min_interval = min_interval
-        self._rate_limiter = _RateLimiter(min_interval)
+        self._rate_limiter = _RateLimiter(max(0.0, float(min_interval)))
         self._client: httpx2.Client | None = None
+
+    @property
+    def min_interval(self) -> float:
+        """Minimum spacing in seconds between consecutive requests."""
+        return self._rate_limiter.min_interval
+
+    @min_interval.setter
+    def min_interval(self, value: float) -> None:
+        self._rate_limiter.min_interval = max(0.0, float(value))
 
     def _build_client(self) -> httpx2.Client:
         return httpx2.Client(
