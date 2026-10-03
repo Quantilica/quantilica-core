@@ -9,12 +9,14 @@ from tempfile import mkdtemp
 import httpx2
 import pytest
 
+import quantilica.core.http as http_mod
 from quantilica.core.exceptions import FetchError
 from quantilica.core.http import (
     BROWSER_HEADERS,
     AsyncHttpClient,
     HttpClient,
     HttpStatusError,
+    RateLimiter,
 )
 
 
@@ -456,24 +458,20 @@ def test_http_client_min_interval_defaults_to_zero():
 
 
 def test_rate_limiter_disabled_for_zero_interval(monkeypatch):
-    import quantilica.core.http as http_mod
-
     def _fail_sleep(seconds):
         raise AssertionError(f"sleep({seconds}) should not be called")
 
     monkeypatch.setattr(http_mod.time, "sleep", _fail_sleep)
-    limiter = http_mod._RateLimiter(0.0)
+    limiter = RateLimiter(0.0)
     limiter.acquire()
     limiter.acquire()
 
 
 def test_rate_limiter_schedules_spaced_slots(monkeypatch):
-    import quantilica.core.http as http_mod
-
     sleeps: list[float] = []
     monkeypatch.setattr(http_mod.time, "sleep", lambda seconds: sleeps.append(seconds))
 
-    limiter = http_mod._RateLimiter(0.1)
+    limiter = RateLimiter(0.1)
     limiter.acquire()
     limiter.acquire()
     limiter.acquire()
@@ -484,12 +482,10 @@ def test_rate_limiter_schedules_spaced_slots(monkeypatch):
 
 
 def test_rate_limiter_thread_safe_spacing(monkeypatch):
-    import quantilica.core.http as http_mod
-
     sleeps: list[float] = []
     monkeypatch.setattr(http_mod.time, "sleep", lambda seconds: sleeps.append(seconds))
 
-    limiter = http_mod._RateLimiter(0.1)
+    limiter = RateLimiter(0.1)
     threads = [threading.Thread(target=limiter.acquire) for _ in range(4)]
     for thread in threads:
         thread.start()
@@ -498,6 +494,17 @@ def test_rate_limiter_thread_safe_spacing(monkeypatch):
 
     sorted_sleeps = sorted(sleeps)
     assert sorted_sleeps == pytest.approx([0.1, 0.2, 0.3], abs=0.02)
+
+
+def test_rate_limiter_private_alias_kept_for_compat():
+    assert http_mod._RateLimiter is RateLimiter
+
+
+def test_rate_limiter_exported_from_package_root():
+    import quantilica.core
+
+    assert quantilica.core.RateLimiter is http_mod.RateLimiter
+    assert "RateLimiter" in quantilica.core.__all__
 
 
 def test_http_client_rate_limits_sequential_requests():

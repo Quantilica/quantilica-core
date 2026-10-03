@@ -5,6 +5,17 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.9.0] - 2026-10-03
+
+### Adicionado
+
+- `files`: `decompress_archive(archive_path, output_dir=None, target_extensions=None) -> Path` — extração canônica de arquivos compactados para os fetchers. ZIP via `zipfile` com proteção *Zip Slip* (todos os membros validados contra o diretório de destino); TAR/TGZ/TBZ/TXZ via `tarfile` com `filter='data'` (Python >= 3.12); fallback transparente para o binário externo `7z` (`.7z`, `.rar` e formatos não suportados nativamente) com `StorageError` claro quando o binário está ausente ou falha. Com `target_extensions` (ex.: `('.csv', '.xls')`), retorna o primeiro arquivo de dados compatível; sem filtro, retorna arquivo único, o primeiro arquivo de dados comum, ou o diretório de destino quando há múltiplos arquivos. Exportado também via `quantilica.core`.
+- `ftp`: `parse_ftp_list_line(line) -> tuple[str, int, datetime] | None` — parser canônico de listagens de diretório FTP legadas nos formatos IIS/Windows (`MM-DD-YY  HH:MMAM|PM  SIZE NAME`, com `<DIR>` para diretórios) e UNIX `ls -l` (permissões, tamanho, mês, dia, ano-ou-hora; ano retroativo quando a hora cai no futuro). Retorna `(filename, size_bytes, modified_dt)` apenas para arquivos regulares; retorna `None` para diretórios, links/dispositivos, `total` e linhas vazias/inválidas. Exportado também via `quantilica.core`.
+
+### Alterado
+
+- `http`: `_RateLimiter` promovida à API pública como `RateLimiter` (elimina importação de símbolo privado nos fetchers, ex. `sidra-fetcher`). Alias retrocompatível `_RateLimiter = RateLimiter` mantido. `RateLimiter` e `HttpClient` (que continua consumindo o limiter via `min_interval`) exportados em `http.__all__` e via `quantilica.core`.
+
 ## [0.8.1] - 2026-10-02
 
 ### Adicionado

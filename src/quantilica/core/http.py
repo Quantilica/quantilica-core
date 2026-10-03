@@ -85,7 +85,7 @@ DEFAULT_RETRY_EXCEPTIONS = (
 )
 
 
-class _RateLimiter:
+class RateLimiter:
     """Thread-safe minimal rate limiter (fixed spacing between slots).
 
     A fast lock is held only to reserve the next available slot; the actual
@@ -120,6 +120,26 @@ class _RateLimiter:
             self._next_slot = slot + self.min_interval
         if delay > 0:
             time.sleep(delay)
+
+
+_RateLimiter = RateLimiter
+"""Backward-compatible alias for the pre-0.9 private name."""
+
+__all__ = [
+    "AsyncHttpClient",
+    "BROWSER_HEADERS",
+    "DEFAULT_LIMITS",
+    "DEFAULT_RETRY_EXCEPTIONS",
+    "DEFAULT_STREAM_CHUNK_SIZE",
+    "DEFAULT_TIMEOUT",
+    "DEFAULT_USER_AGENT",
+    "HttpClient",
+    "HttpStatusError",
+    "ProgressCallback",
+    "RETRY_STATUS_CODES",
+    "RateLimiter",
+    "RetryableHttpStatusError",
+]
 
 
 class HttpClient:

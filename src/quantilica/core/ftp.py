@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import contextlib
+import datetime as dt
 import ftplib
 import logging
 import os
+import re
 import socket as _socket
 import threading
 import time
@@ -31,6 +33,94 @@ FTP_TRANSIENT_ERRORS: tuple[type[BaseException], ...] = (
     EOFError,
     OSError,  # superclass of ConnectionResetError, BrokenPipeError, TimeoutError
 )
+
+# IIS/Windows DOS-style LIST line, e.g.:
+#   "04-21-26  09:00AM       123456789 arquivo.csv"
+#   "10-02-02  03:31PM       <DIR>          docs"
+_IIS_LINE_RE = re.compile(
+    r"^(?P<date>\d{2}-\d{2}-\d{2})\s+"
+    r"(?P<time>\d{1,2}:\d{2})(?P<ampm>AM|PM)\s+"
+    r"(?P<size><DIR>|\d+)\s+"
+    r"(?P<name>.*)$",
+    re.IGNORECASE,
+)
+
+# UNIX ls -l style LIST line, e.g.:
+#   "-rw-r--r-- 1 ftp ftp 123456789 Apr 21 09:00 arquivo.csv"
+_UNIX_LINE_RE = re.compile(
+    r"^(?P<perm>[-dlbcps][rwxstT-]{9})\s+\d+\s+\S+\s+\S+\s+"
+    r"(?P<size>\d+)\s+(?P<month>[A-Z][a-z]{2})\s+"
+    r"(?P<day>\d{1,2})\s+(?P<year_or_time>\d{4}|\d{1,2}:\d{2})\s+"
+    r"(?P<name>.*)$",
+)
+
+_MONTHS = {
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
+
+
+def parse_ftp_list_line(line: str) -> tuple[str, int, dt.datetime] | None:
+    """Parse one raw FTP ``LIST`` line into (filename, size, modified).
+
+    Handles both legacy IIS/Windows DOS-style listings (``MM-DD-YY  HH:MMAM
+    SIZE NAME``, where size is ``<DIR>`` for directories) and UNIX ``ls -l``
+    style listings (permission string, size, month, day, year-or-time, name).
+
+    Args:
+        line: Raw line as returned by ``ftplib`` LIST/retrlines.
+
+    Returns:
+        tuple[str, int, dt.datetime] | None: ``(filename, size_bytes,
+        modified_dt)`` for regular files, or ``None`` for directories,
+        device/link entries and empty or unrecognizable lines.
+    """
+    stripped = line.strip()
+    if not stripped:
+        return None
+
+    if match := _IIS_LINE_RE.match(stripped):
+        raw_dt = dt.datetime.strptime(
+            f"{match['date']} {match['time']}{match['ampm'].upper()}",
+            "%m-%d-%y %I:%M%p",
+        )
+        if match["size"].upper() == "<DIR>":
+            return None
+        name = match["name"].strip()
+        return (name, int(match["size"]), raw_dt) if name else None
+
+    if match := _UNIX_LINE_RE.match(stripped):
+        permissions = match["perm"]
+        if permissions[0] != "-":
+            return None  # d/l/c/b/p/s: directory, link, device, fifo...
+        month = _MONTHS.get(match["month"].lower())
+        day = int(match["day"])
+        year_slot = match["year_or_time"]
+        if ":" in year_slot:
+            hour, minute = (int(value) for value in year_slot.split(":", 1))
+            now = dt.datetime.now()
+            raw_dt = now.replace(month=month, day=day, hour=hour, minute=minute)
+            # ls shows the year only for files older than ~6 months; recent
+            # files carry a time-of-day instead. A time-of-day that lands in
+            # the future therefore belongs to last year.
+            if raw_dt > now:
+                raw_dt = raw_dt.replace(year=now.year - 1)
+        else:
+            raw_dt = dt.datetime(int(year_slot), month, day)
+        name = match["name"].strip()
+        return (name, int(match["size"]), raw_dt) if name else None
+
+    return None
 
 
 def ftp_connect(
