@@ -67,17 +67,17 @@ jobs:
         run: |
           cd ws
           for i in 1 2 3; do
-            if uv sync --all-packages; then exit 0; fi
+            if uv sync --all-packages --all-extras; then exit 0; fi
             echo "::warning::uv sync falhou (tentativa $i/3); nova tentativa em 10s"
             sleep 10
           done
           exit 1
 
-      # `uv sync --all-packages` não instala extras de members; os testes de
-      # leitura de Excel (anp/anac) precisam dos backends do polars/pandas.
-      # Deriva detectada na primeira execução (polars passou a exigir fastexcel).
-      - name: Extras de teste (backends de Excel)
-        run: cd ws && uv pip install fastexcel openpyxl
+      # `uv sync --all-packages` não instala extras nem grupos dev de members;
+      # os testes de leitura de Excel (anp/anac) e DBF (datasus) precisam dos
+      # backends respectivos instalados no ambiente compartilhado.
+      - name: Extras de teste (backends de Excel e DBF)
+        run: cd ws && uv pip install fastexcel openpyxl dbfread fastdbf
 
       - name: Hygiene — nenhum tool.uv.sources de workspace em repo publicado
         run: |
