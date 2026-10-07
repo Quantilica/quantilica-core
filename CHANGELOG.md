@@ -5,6 +5,24 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.10.0] - 2026-10-07
+
+### Adicionado
+
+- `http`: `VerifyOption = bool | str | ssl.SSLContext` — `HttpClient` e
+  `AsyncHttpClient` aceitam caminho de CA bundle ou `SSLContext` além de
+  booleano no parâmetro `verify`.
+- `http`: `resolve_verify_from_env() -> bool | str` — resolve verificação TLS
+  a partir do ambiente (`QUANTILICA_CA_BUNDLE` tem precedência;
+  `QUANTILICA_SSL_VERIFY` com `0/false/no/off` desliga, caminho usa como
+  bundle; padrão `True`).
+- `http`: resume com `Range` em `download_with_manifest` (sync e async) — o
+  parcial sobrevive entre tentativas; servidor que ignora `Range` volta a
+  restart-from-zero; 416 reinicia uma vez.
+- `http`: `is_remote_more_recent(response, local_path, check_size=True)` —
+  predicado público de freshness compartilhado entre download e verificação
+  (alias `_is_remote_more_recent` mantido).
+
 ## [0.9.0] - 2026-10-03
 
 ### Adicionado
