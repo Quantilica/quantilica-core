@@ -185,6 +185,7 @@ __all__ = [
     "RateLimiter",
     "RetryableHttpStatusError",
     "VerifyOption",
+    "is_remote_more_recent",
     "resolve_verify_from_env",
 ]
 
@@ -1627,13 +1628,17 @@ def _write_manifest(
     write_manifest_sidecar(target, manifest)
 
 
-def _is_remote_more_recent(
+def is_remote_more_recent(
     response: httpx2.Response,
     local_path: Path,
     *,
     check_size: bool = True,
 ) -> bool:
-    """Check if the remote resource is more recent than the local file."""
+    """Check if the remote resource is more recent than the local file.
+
+    Shared freshness predicate used by both ``download`` (sync) and
+    ``check`` (verification-only) flows so they always agree.
+    """
     if not local_path.exists():
         return True
 
@@ -1662,3 +1667,7 @@ def _is_remote_more_recent(
         return local_path.stat().st_mtime < (remote_mtime - 1)
     except (ValueError, TypeError, OSError):
         return True
+
+
+_is_remote_more_recent = is_remote_more_recent
+"""Backward-compatible alias for the pre-1.0 private name."""
