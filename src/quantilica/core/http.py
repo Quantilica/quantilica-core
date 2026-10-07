@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import datetime as dt
 import email.utils
 import hashlib
 import logging
 import os
+import ssl
 import tempfile
 import threading
 import time
@@ -21,7 +23,7 @@ from .exceptions import FetchError, StorageError
 from .files import check_free_space, ensure_parent, write_bytes_atomic
 from .logging import bind_context, get_logger, log_step
 from .manifests import DownloadManifest, write_manifest_sidecar
-from .retry import async_retry_call, retry_call
+from .retry import RetryError, async_retry_call, exponential_delay, retry_call
 
 ProgressCallback = Callable[[int, int], None]
 """Callback invoked as ``(downloaded_bytes, total_bytes)`` during a stream.
@@ -84,6 +86,49 @@ DEFAULT_RETRY_EXCEPTIONS = (
     TimeoutError,
 )
 
+VerifyOption = bool | str | ssl.SSLContext
+"""TLS verification setting accepted by :class:`HttpClient`.
+
+``True`` (default) verifies with the system/httpx trust store, a ``str``
+path points at a custom CA bundle file or directory, an ``SSLContext``
+is used as-is, and ``False`` disables verification (ops escape hatch
+only — never ship it as a default).
+"""
+
+_FALSE_VALUES = frozenset({"0", "false", "no", "off", "disable", "disabled"})
+_TRUE_VALUES = frozenset({"1", "true", "yes", "on", "enable", "enabled"})
+
+
+def resolve_verify_from_env() -> bool | str:
+    """Resolve TLS verification from the environment.
+
+    Precedence:
+
+    1. ``QUANTILICA_CA_BUNDLE`` pointing at an existing file/dir.
+    2. ``QUANTILICA_SSL_VERIFY``: falsy value (``0``/``false``/``no``/
+       ``off``) disables; truthy value enables; an existing path is
+       used as the CA bundle.
+    3. Default ``True``.
+
+    Disabling verification is an explicit operator decision for hosts
+    with broken chains (e.g. missing intermediates) — it must never be
+    a code default.
+    """
+    bundle = (os.environ.get("QUANTILICA_CA_BUNDLE") or "").strip()
+    if bundle and Path(bundle).exists():
+        return bundle
+    raw = (os.environ.get("QUANTILICA_SSL_VERIFY") or "").strip()
+    if not raw:
+        return True
+    lowered = raw.lower()
+    if lowered in _FALSE_VALUES:
+        return False
+    if lowered in _TRUE_VALUES:
+        return True
+    if Path(raw).exists():
+        return raw
+    return True
+
 
 class RateLimiter:
     """Thread-safe minimal rate limiter (fixed spacing between slots).
@@ -139,6 +184,8 @@ __all__ = [
     "RETRY_STATUS_CODES",
     "RateLimiter",
     "RetryableHttpStatusError",
+    "VerifyOption",
+    "resolve_verify_from_env",
 ]
 
 
@@ -153,7 +200,7 @@ class HttpClient:
         follow_redirects: bool = True,
         attempts: int = 3,
         retry_base_delay: float = 1.0,
-        verify: bool = True,
+        verify: VerifyOption = True,
         transport: httpx2.BaseTransport | None = None,
         logger: logging.Logger | None = None,
         cookies: httpx2.Cookies | None = None,
@@ -657,6 +704,10 @@ class HttpClient:
         If the file exists and is up to date according to ``Last-Modified``
         (and optionally ``Content-Length``), it is not downloaded.
 
+        Interrupted streams are resumed with ``Range`` requests across
+        attempts (when the server honors them); servers that ignore
+        ``Range`` fall back to restart-from-zero.
+
         ``progress`` is invoked as ``(downloaded_bytes, total_bytes)`` after
         each chunk is written. ``total_bytes`` is ``0`` when the remote does
         not advertise ``Content-Length``.
@@ -703,57 +754,113 @@ class HttpClient:
 
             outcome: dict[str, Any] = {}
 
-            def _stream_attempt() -> None:
-                if progress is not None:
-                    progress(0, 0)
-                downloaded = 0
-                digest = hashlib.sha256()
-                with self.stream(
-                    "GET", url, params=params, headers=headers
-                ) as response:
-                    total = int(response.headers.get("Content-Length", 0) or 0)
-                    if not check_free_space(target, required_bytes=total):
-                        req_mb = total / (1024 * 1024)
-                        raise StorageError(
-                            f"Insufficient disk space to download {target.name} "
-                            f"to {target.parent} (required: {req_mb:.1f} MB)"
-                        )
-
-                    outcome["last_modified"] = response.headers.get("Last-Modified")
-
-                    outcome["final_url"] = str(response.url)
-
-                    fd, temp_path = _open_atomic_temp(target)
+            # Stream with resume: a partial temp file survives across
+            # attempts and the next attempt sends ``Range`` so flaky
+            # hosts don't force a restart from zero on every reset.
+            fd, temp_path = _open_atomic_temp(target)
+            os.close(fd)
+            downloaded = 0
+            digest = hashlib.sha256()
+            last_error: BaseException | None = None
+            succeeded = False
+            try:
+                for attempt in range(1, self.attempts + 1):
+                    req_headers = dict(headers or {})
+                    if downloaded:
+                        req_headers["Range"] = f"bytes={downloaded}-"
+                    if progress is not None:
+                        progress(downloaded, downloaded)
                     try:
-                        with os.fdopen(fd, "wb") as stream:
-                            for chunk in response.iter_bytes(chunk_size=chunk_size):
-                                if not chunk:
-                                    continue
-                                stream.write(chunk)
-                                digest.update(chunk)
-                                downloaded += len(chunk)
-                                if progress is not None:
-                                    progress(downloaded, total)
-                            stream.flush()
-                            os.fsync(stream.fileno())
-                        temp_path.replace(target)
-                    except OSError as exc:
-                        raise StorageError(
-                            f"Could not stream download to {target}"
-                        ) from exc
-                    finally:
-                        if temp_path.exists():
-                            with contextlib.suppress(OSError):
-                                temp_path.unlink()
+                        with self.stream(
+                            "GET", url, params=params, headers=req_headers
+                        ) as response:
+                            if downloaded and response.status_code == 200:
+                                # Server ignored Range — restart from zero.
+                                self.logger.debug(
+                                    f"Range ignored for {target.name}; restarting"
+                                )
+                                downloaded = 0
+                                digest = hashlib.sha256()
+                            total = downloaded + int(
+                                response.headers.get("Content-Length", 0) or 0
+                            )
+                            if not check_free_space(
+                                target, required_bytes=total - downloaded
+                            ):
+                                req_mb = (total - downloaded) / (1024 * 1024)
+                                raise StorageError(
+                                    f"Insufficient disk space to download "
+                                    f"{target.name} to {target.parent} "
+                                    f"(required: {req_mb:.1f} MB)"
+                                )
+
+                            outcome["last_modified"] = response.headers.get(
+                                "Last-Modified"
+                            )
+                            outcome["final_url"] = str(response.url)
+
+                            mode = "ab" if downloaded else "wb"
+                            if mode == "ab" and (
+                                not temp_path.exists()
+                                or temp_path.stat().st_size != downloaded
+                            ):
+                                # Partial file vanished or changed underneath
+                                # us — restart cleanly instead of corrupting.
+                                mode = "wb"
+                                downloaded = 0
+                                digest = hashlib.sha256()
+                            try:
+                                with open(temp_path, mode) as stream:
+                                    for chunk in response.iter_bytes(
+                                        chunk_size=chunk_size
+                                    ):
+                                        if not chunk:
+                                            continue
+                                        stream.write(chunk)
+                                        digest.update(chunk)
+                                        downloaded += len(chunk)
+                                        if progress is not None:
+                                            progress(downloaded, total)
+                                    stream.flush()
+                                    os.fsync(stream.fileno())
+                            except OSError as exc:
+                                raise StorageError(
+                                    f"Could not stream download to {target}"
+                                ) from exc
+                    except HttpStatusError as exc:
+                        if exc.status_code == 416 and downloaded:
+                            # Offset beyond EOF (remote shrank?) — restart.
+                            self.logger.debug(
+                                f"Range unsatisfiable for {target.name}; restarting"
+                            )
+                            downloaded = 0
+                            digest = hashlib.sha256()
+                            continue
+                        if exc.status_code not in RETRY_STATUS_CODES:
+                            raise
+                        last_error = exc
+                    except DEFAULT_RETRY_EXCEPTIONS as exc:
+                        last_error = exc
+                    else:
+                        succeeded = True
+                        break
+                    if attempt == self.attempts:
+                        break
+                    time.sleep(
+                        exponential_delay(attempt, base_delay=self.retry_base_delay)
+                    )
+                if not succeeded:
+                    raise RetryError(
+                        f"Operation failed after {self.attempts} attempt(s)",
+                        attempts=self.attempts,
+                    ) from last_error
                 outcome["sha256"] = digest.hexdigest()
                 outcome["size_bytes"] = downloaded
-
-            retry_call(
-                _stream_attempt,
-                attempts=self.attempts,
-                base_delay=self.retry_base_delay,
-                retry_exceptions=DEFAULT_RETRY_EXCEPTIONS,
-            )
+                temp_path.replace(target)
+            finally:
+                if temp_path.exists():
+                    with contextlib.suppress(OSError):
+                        temp_path.unlink()
 
             _sync_mtime_from_last_modified(target, outcome["last_modified"])
             _write_manifest(
@@ -839,7 +946,7 @@ class AsyncHttpClient:
         follow_redirects: bool = True,
         attempts: int = 3,
         retry_base_delay: float = 1.0,
-        verify: bool = True,
+        verify: VerifyOption = True,
         transport: httpx2.AsyncBaseTransport | None = None,
         logger: logging.Logger | None = None,
         cookies: httpx2.Cookies | None = None,
@@ -1315,51 +1422,97 @@ class AsyncHttpClient:
 
             outcome: dict[str, Any] = {}
 
-            async def _stream_attempt() -> None:
-                if progress is not None:
-                    progress(0, 0)
-                downloaded = 0
-                digest = hashlib.sha256()
-                async with self.stream(
-                    "GET", url, params=params, headers=headers
-                ) as response:
-                    total = int(response.headers.get("Content-Length", 0) or 0)
-                    outcome["last_modified"] = response.headers.get("Last-Modified")
-                    outcome["final_url"] = str(response.url)
-
-                    fd, temp_path = _open_atomic_temp(target)
+            # Same resume semantics as the sync variant (see above).
+            fd, temp_path = _open_atomic_temp(target)
+            os.close(fd)
+            downloaded = 0
+            digest = hashlib.sha256()
+            last_error: BaseException | None = None
+            succeeded = False
+            try:
+                for attempt in range(1, self.attempts + 1):
+                    req_headers = dict(headers or {})
+                    if downloaded:
+                        req_headers["Range"] = f"bytes={downloaded}-"
+                    if progress is not None:
+                        progress(downloaded, downloaded)
                     try:
-                        with os.fdopen(fd, "wb") as stream:
-                            async for chunk in response.aiter_bytes(
-                                chunk_size=chunk_size
+                        async with self.stream(
+                            "GET", url, params=params, headers=req_headers
+                        ) as response:
+                            if downloaded and response.status_code == 200:
+                                self.logger.debug(
+                                    f"Range ignored for {target.name}; restarting"
+                                )
+                                downloaded = 0
+                                digest = hashlib.sha256()
+                            total = downloaded + int(
+                                response.headers.get("Content-Length", 0) or 0
+                            )
+                            outcome["last_modified"] = response.headers.get(
+                                "Last-Modified"
+                            )
+                            outcome["final_url"] = str(response.url)
+
+                            mode = "ab" if downloaded else "wb"
+                            if mode == "ab" and (
+                                not temp_path.exists()
+                                or temp_path.stat().st_size != downloaded
                             ):
-                                if not chunk:
-                                    continue
-                                stream.write(chunk)
-                                digest.update(chunk)
-                                downloaded += len(chunk)
-                                if progress is not None:
-                                    progress(downloaded, total)
-                            stream.flush()
-                            os.fsync(stream.fileno())
-                        temp_path.replace(target)
-                    except OSError as exc:
-                        raise StorageError(
-                            f"Could not stream download to {target}"
-                        ) from exc
-                    finally:
-                        if temp_path.exists():
-                            with contextlib.suppress(OSError):
-                                temp_path.unlink()
+                                mode = "wb"
+                                downloaded = 0
+                                digest = hashlib.sha256()
+                            try:
+                                with open(temp_path, mode) as stream:
+                                    async for chunk in response.aiter_bytes(
+                                        chunk_size=chunk_size
+                                    ):
+                                        if not chunk:
+                                            continue
+                                        stream.write(chunk)
+                                        digest.update(chunk)
+                                        downloaded += len(chunk)
+                                        if progress is not None:
+                                            progress(downloaded, total)
+                                    stream.flush()
+                                    os.fsync(stream.fileno())
+                            except OSError as exc:
+                                raise StorageError(
+                                    f"Could not stream download to {target}"
+                                ) from exc
+                    except HttpStatusError as exc:
+                        if exc.status_code == 416 and downloaded:
+                            self.logger.debug(
+                                f"Range unsatisfiable for {target.name}; restarting"
+                            )
+                            downloaded = 0
+                            digest = hashlib.sha256()
+                            continue
+                        if exc.status_code not in RETRY_STATUS_CODES:
+                            raise
+                        last_error = exc
+                    except DEFAULT_RETRY_EXCEPTIONS as exc:
+                        last_error = exc
+                    else:
+                        succeeded = True
+                        break
+                    if attempt == self.attempts:
+                        break
+                    await asyncio.sleep(
+                        exponential_delay(attempt, base_delay=self.retry_base_delay)
+                    )
+                if not succeeded:
+                    raise RetryError(
+                        f"Async operation failed after {self.attempts} attempt(s)",
+                        attempts=self.attempts,
+                    ) from last_error
                 outcome["sha256"] = digest.hexdigest()
                 outcome["size_bytes"] = downloaded
-
-            await async_retry_call(
-                _stream_attempt,
-                attempts=self.attempts,
-                base_delay=self.retry_base_delay,
-                retry_exceptions=DEFAULT_RETRY_EXCEPTIONS,
-            )
+                temp_path.replace(target)
+            finally:
+                if temp_path.exists():
+                    with contextlib.suppress(OSError):
+                        temp_path.unlink()
 
             _sync_mtime_from_last_modified(target, outcome["last_modified"])
             _write_manifest(

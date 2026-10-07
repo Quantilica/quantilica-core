@@ -554,3 +554,128 @@ def test_http_client_rate_limits_stream_requests():
     assert out.read_bytes() == payload
     # HEAD (freshness) + GET (stream) => pelo menos um intervalo.
     assert elapsed >= 0.049
+
+
+def test_resolve_verify_from_env_defaults_true(monkeypatch):
+    monkeypatch.delenv("QUANTILICA_CA_BUNDLE", raising=False)
+    monkeypatch.delenv("QUANTILICA_SSL_VERIFY", raising=False)
+    assert http_mod.resolve_verify_from_env() is True
+
+
+def test_resolve_verify_from_env_disable(monkeypatch):
+    monkeypatch.delenv("QUANTILICA_CA_BUNDLE", raising=False)
+    monkeypatch.setenv("QUANTILICA_SSL_VERIFY", "0")
+    assert http_mod.resolve_verify_from_env() is False
+
+
+def test_resolve_verify_from_env_ca_bundle(tmp_path, monkeypatch):
+    bundle = tmp_path / "ca.pem"
+    bundle.write_text("dummy")
+    monkeypatch.setenv("QUANTILICA_CA_BUNDLE", str(bundle))
+    assert http_mod.resolve_verify_from_env() == str(bundle)
+
+
+def test_http_client_accepts_ca_bundle_path():
+    client = HttpClient(attempts=1, verify="/tmp/ca.pem")
+    assert client.verify == "/tmp/ca.pem"
+
+
+def test_download_with_manifest_resumes_after_midstream_failure(tmp_path):
+    # Pieces match chunk_size exactly so buffering can't swallow them:
+    # attempt 1 persists 4 x 64 B, then the stream dies mid-body.
+    piece, total_pieces, fail_after = 64, 8, 4
+    payload = b"x" * (piece * total_pieces)
+    calls = []
+
+    def failing_content():
+        for _ in range(fail_after):
+            yield b"x" * piece
+        raise httpx2.ReadError("connection reset")
+
+    def handler(request):
+        calls.append((request.method, request.headers.get("range")))
+        if request.method == "HEAD":
+            return httpx2.Response(200, headers={"Content-Length": str(len(payload))})
+        if request.headers.get("range") == f"bytes={piece * fail_after}-":
+            rest = payload[piece * fail_after :]
+            return httpx2.Response(
+                206,
+                headers={
+                    "Content-Length": str(len(rest)),
+                    "Content-Range": (
+                        f"bytes {piece * fail_after}-{len(payload) - 1}/{len(payload)}"
+                    ),
+                },
+                content=rest,
+            )
+        return httpx2.Response(
+            200,
+            headers={"Content-Length": str(len(payload))},
+            content=failing_content(),
+        )
+
+    client = HttpClient(
+        attempts=2,
+        retry_base_delay=0.01,
+        transport=httpx2.MockTransport(handler),
+    )
+    out = client.download_with_manifest(
+        "https://example.test/data.bin",
+        tmp_path / "data.bin",
+        source_id="src",
+        dataset_id="ds",
+        producer="test",
+        chunk_size=piece,
+    )
+
+    assert out.read_bytes() == payload
+    get_ranges = [r for m, r in calls if m == "GET"]
+    assert get_ranges[0] is None
+    assert get_ranges[1] == f"bytes={piece * fail_after}-"
+    manifest = json.loads((tmp_path / "data.bin.manifest.json").read_text())
+    assert manifest["sha256"] == hashlib.sha256(payload).hexdigest()
+    assert manifest["size_bytes"] == len(payload)
+
+
+def test_download_with_manifest_restarts_when_server_ignores_range(tmp_path):
+    piece, fail_after = 64, 1
+    payload = b"z" * (piece * 4)
+    seen_ranges = []
+
+    def failing_content():
+        yield payload[:piece]
+        raise httpx2.ReadError("connection reset")
+
+    def handler(request):
+        if request.method == "HEAD":
+            return httpx2.Response(200, headers={"Content-Length": str(len(payload))})
+        seen_ranges.append(request.headers.get("range"))
+        # Server ignores Range: always 200 full body.
+        if len(seen_ranges) == 1:
+            return httpx2.Response(
+                200,
+                headers={"Content-Length": str(len(payload))},
+                content=failing_content(),
+            )
+        return httpx2.Response(
+            200,
+            headers={"Content-Length": str(len(payload))},
+            content=payload,
+        )
+
+    client = HttpClient(
+        attempts=2,
+        retry_base_delay=0.01,
+        transport=httpx2.MockTransport(handler),
+    )
+    out = client.download_with_manifest(
+        "https://example.test/data.bin",
+        tmp_path / "data.bin",
+        source_id="src",
+        dataset_id="ds",
+        producer="test",
+        chunk_size=piece,
+    )
+
+    assert out.read_bytes() == payload
+    assert seen_ranges == [None, f"bytes={piece * fail_after}-"]
