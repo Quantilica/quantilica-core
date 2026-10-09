@@ -1,6 +1,8 @@
 import json
 from dataclasses import replace
 
+import pytest
+
 from quantilica.core.files import sha256_bytes
 from quantilica.core.manifests import (
     MANIFEST_VERSION,
@@ -84,6 +86,16 @@ def test_manifest_json_round_trip(tmp_path):
 
     assert payload["source_id"] == "ibge"
     assert payload["sha256"] == sha256_bytes(b"abc")
+
+
+@pytest.mark.parametrize("bad_payload", ["[]", '"just-a-string"', "3", "null", "true"])
+def test_download_manifest_read_json_rejects_non_object(tmp_path, bad_payload):
+    """A manifest file must be a JSON object — anything else raises ``ValueError``."""
+    malformed = tmp_path / "bad.manifest.json"
+    malformed.write_text(bad_payload, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must be an object"):
+        DownloadManifest.read_json(malformed)
 
 
 def test_dataset_manifest_serializes_nested_resources():

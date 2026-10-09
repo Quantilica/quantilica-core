@@ -240,6 +240,48 @@ class DownloadManifest:
             metadata=dict(metadata or {}),
         )
 
+    @classmethod
+    def read_json(cls, path: str | Path) -> DownloadManifest:
+        """Rebuild a manifest from a JSON file written by :meth:`write_json`.
+
+        Only the core provenance fields and ``source_meta`` are restored;
+        optional enrichment groups (``fingerprint``, ``lineage``...) are
+        ignored on read.
+
+        Raises:
+            FileNotFoundError: If the manifest file does not exist.
+            ValueError: If the JSON payload is not an object.
+        """
+        with open(path, encoding="utf-8") as stream:
+            data = json.load(stream)
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"Manifest JSON must be an object, got {type(data).__name__}"
+            )
+        payload: dict[str, Any] = data
+        source_meta_raw = payload.get("source_meta")
+        source_meta = (
+            SourceMetadata(
+                etag=source_meta_raw.get("etag"),
+                last_modified=source_meta_raw.get("last_modified"),
+            )
+            if isinstance(source_meta_raw, dict)
+            else None
+        )
+        return cls(
+            source_id=str(payload.get("source_id") or ""),
+            dataset_id=str(payload.get("dataset_id") or ""),
+            url=str(payload.get("url") or ""),
+            fetched_at=str(payload.get("fetched_at") or ""),
+            sha256=str(payload.get("sha256") or ""),
+            size_bytes=int(payload.get("size_bytes") or 0),
+            path=payload.get("path"),
+            producer=payload.get("producer"),
+            producer_version=payload.get("producer_version"),
+            metadata=dict(payload.get("metadata") or {}),
+            source_meta=source_meta,
+        )
+
     def to_dict(self) -> dict[str, Any]:
         """Return this manifest as a dictionary.
 

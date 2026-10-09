@@ -17,6 +17,7 @@ from quantilica.core.http import (
     HttpClient,
     HttpStatusError,
     RateLimiter,
+    is_remote_more_recent,
 )
 
 
@@ -679,3 +680,281 @@ def test_download_with_manifest_restarts_when_server_ignores_range(tmp_path):
 
     assert out.read_bytes() == payload
     assert seen_ranges == [None, f"bytes={piece * fail_after}-"]
+
+
+def _ephemeral_handler_factory(
+    payload: bytes,
+    *,
+    etag: str = '"v1"',
+    last_modified: str = "Mon, 01 Jan 2024 00:00:00 GMT",
+):
+    """HEAD/GET handler recording calls, with ETag and Last-Modified."""
+    calls: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        calls.append(request.method)
+        headers = {
+            "Content-Length": str(len(payload)),
+            "Last-Modified": last_modified,
+            "ETag": etag,
+        }
+        if request.method == "HEAD":
+            return httpx2.Response(200, headers=headers)
+        return httpx2.Response(200, content=payload, headers=headers)
+
+    return handler, calls
+
+
+def test_download_with_manifest_records_source_meta(tmp_path):
+    payload = b"abc"
+    handler, _ = _ephemeral_handler_factory(payload)
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
+    target = tmp_path / "meta.bin"
+    client.download_with_manifest(
+        "https://example.test/data",
+        target,
+        source_id="src",
+        dataset_id="ds",
+        producer="test",
+    )
+    manifest = json.loads(target.with_suffix(".bin.manifest.json").read_text())
+    assert manifest["source_meta"]["etag"] == '"v1"'
+    assert manifest["source_meta"]["last_modified"] == "Mon, 01 Jan 2024 00:00:00 GMT"
+
+
+def test_download_with_manifest_ephemeral_skip_via_manifest(tmp_path):
+    """File deleted (ephemeral) but sidecar survives -> skip via manifest."""
+    payload = b"abc"
+    handler, calls = _ephemeral_handler_factory(payload)
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
+    target = tmp_path / "eph.bin"
+    client.download_with_manifest(
+        "https://example.test/data",
+        target,
+        source_id="src",
+        dataset_id="ds",
+        producer="test",
+    )
+    sidecar = target.with_suffix(".bin.manifest.json")
+    assert sidecar.exists()
+    target.unlink()
+
+    out = client.download_with_manifest(
+        "https://example.test/data",
+        target,
+        source_id="src",
+        dataset_id="ds",
+        producer="test",
+    )
+    assert out == target
+    assert not target.exists()
+    # Only the first download performed the streaming GET.
+    assert calls.count("GET") == 1
+
+
+def test_download_with_manifest_ephemeral_redownloads_when_stale(tmp_path):
+    """Sidecar with stale metadata must not block a real re-download."""
+    payload = b"abc"
+    handler, calls = _ephemeral_handler_factory(payload)
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
+    target = tmp_path / "stale.bin"
+    client.download_with_manifest(
+        "https://example.test/data",
+        target,
+        source_id="src",
+        dataset_id="ds",
+        producer="test",
+    )
+    target.unlink()
+
+    # Simulate a changed remote: different ETag and newer Last-Modified.
+    handler2, calls2 = _ephemeral_handler_factory(
+        payload, etag='"v2"', last_modified="Tue, 02 Jan 2024 00:00:00 GMT"
+    )
+    client2 = HttpClient(attempts=1, transport=httpx2.MockTransport(handler2))
+    out = client2.download_with_manifest(
+        "https://example.test/data",
+        target,
+        source_id="src",
+        dataset_id="ds",
+        producer="test",
+    )
+    assert out == target
+    assert target.exists()
+    assert calls2.count("GET") == 1
+
+
+@pytest.mark.anyio
+async def test_async_download_with_manifest_ephemeral_skip_via_manifest(tmp_path):
+    payload = b"abc"
+    handler, calls = _ephemeral_handler_factory(payload)
+    client = AsyncHttpClient(attempts=1, transport=httpx2.MockTransport(handler))
+    target = tmp_path / "ephy.bin"
+    await client.download_with_manifest(
+        "https://example.test/data",
+        target,
+        source_id="src",
+        dataset_id="ds",
+        producer="test",
+    )
+    target.unlink()
+    out = await client.download_with_manifest(
+        "https://example.test/data",
+        target,
+        source_id="src",
+        dataset_id="ds",
+        producer="test",
+    )
+    assert out == target
+    assert not target.exists()
+    assert calls.count("GET") == 1
+
+
+def test_is_remote_more_recent_manifest_fresh_without_file(tmp_path):
+    payload = b"abc"
+    handler, _ = _ephemeral_handler_factory(payload)
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
+    target = tmp_path / "fresh.bin"
+    client.download_with_manifest(
+        "https://example.test/data",
+        target,
+        source_id="src",
+        dataset_id="ds",
+        producer="test",
+    )
+    target.unlink()
+    head = client.head("https://example.test/data")
+    assert is_remote_more_recent(head, target) is False
+
+
+def test_is_remote_more_recent_manifest_stale_without_file(tmp_path):
+    payload = b"abc"
+    handler, _ = _ephemeral_handler_factory(payload)
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
+    target = tmp_path / "rotten.bin"
+    client.download_with_manifest(
+        "https://example.test/data",
+        target,
+        source_id="src",
+        dataset_id="ds",
+        producer="test",
+    )
+    target.unlink()
+    head = client.head("https://example.test/data")
+    # Interrupted sidecar (bogus manifest) -> must treat as not fresh.
+    target.with_suffix(".bin.manifest.json").write_text("{}")
+    assert is_remote_more_recent(head, target) is True
+
+
+def _head_404_get_200_handler(payload: bytes, *, record: list[str]):
+    """Handler that answers HEAD with 404 and GET with 200 + source metadata."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        record.append(request.method)
+        headers = {
+            "Content-Length": str(len(payload)),
+            "Last-Modified": "Mon, 01 Jan 2024 00:00:00 GMT",
+            "ETag": '"v1"',
+        }
+        if request.method == "HEAD":
+            return httpx2.Response(404)
+        return httpx2.Response(200, content=payload, headers=headers)
+
+    return handler
+
+
+def test_download_with_manifest_head_404_then_get_200_writes_manifest(tmp_path):
+    """Regression: HEAD 404 (FetchError) must not leak an unbound ``head``
+    variable into the manifest write — headers come from the GET outcome."""
+    payload = b"head-404-payload"
+    calls: list[str] = []
+    handler = _head_404_get_200_handler(payload, record=calls)
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
+    target = tmp_path / "data.bin"
+
+    out = client.download_with_manifest(
+        "https://example.test/data",
+        target,
+        source_id="src",
+        dataset_id="ds",
+        producer="test",
+    )
+
+    assert out == target
+    assert target.read_bytes() == payload
+    assert calls == ["HEAD", "GET"]
+    manifest = json.loads(target.with_suffix(".bin.manifest.json").read_text())
+    assert manifest["sha256"] == hashlib.sha256(payload).hexdigest()
+    # Source metadata is captured from the GET stream, not the failed HEAD.
+    assert manifest["source_meta"]["etag"] == '"v1"'
+    assert manifest["source_meta"]["last_modified"] == "Mon, 01 Jan 2024 00:00:00 GMT"
+
+
+@pytest.mark.anyio
+async def test_async_download_with_manifest_head_404_then_get_200_writes_manifest(
+    tmp_path,
+):
+    """Async regression: HEAD 404 then GET 200 still records the sidecar."""
+    payload = b"async-head-404-payload"
+    calls: list[str] = []
+    handler = _head_404_get_200_handler(payload, record=calls)
+    client = AsyncHttpClient(attempts=1, transport=httpx2.MockTransport(handler))
+    target = tmp_path / "data.bin"
+
+    out = await client.download_with_manifest(
+        "https://example.test/data",
+        target,
+        source_id="src",
+        dataset_id="ds",
+        producer="test",
+    )
+
+    assert out == target
+    assert target.read_bytes() == payload
+    assert calls == ["HEAD", "GET"]
+    manifest = json.loads(target.with_suffix(".bin.manifest.json").read_text())
+    assert manifest["sha256"] == hashlib.sha256(payload).hexdigest()
+    assert manifest["source_meta"]["etag"] == '"v1"'
+
+
+@pytest.mark.parametrize("bad_payload", ["[]", '"just-a-string"', "3", "null"])
+def test_download_with_manifest_corrupt_sidecar_failsafe_downloads(
+    tmp_path, bad_payload
+):
+    """Corrupt sidecar (non-object JSON) must fail safe: (re)download the file
+    instead of crashing (e.g. AttributeError/TypeError on the payload)."""
+    payload = b"abc"
+    handler, calls = _ephemeral_handler_factory(payload)
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
+    target = tmp_path / "corrupt.bin"
+    sidecar = target.with_suffix(".bin.manifest.json")
+    sidecar.write_text(bad_payload)
+
+    out = client.download_with_manifest(
+        "https://example.test/data",
+        target,
+        source_id="src",
+        dataset_id="ds",
+        producer="test",
+    )
+
+    assert out == target
+    assert target.read_bytes() == payload
+    # Freshness check failed safely -> streaming GET was performed once.
+    assert calls.count("GET") == 1
+    # The rewritten sidecar is a valid manifest again.
+    manifest = json.loads(sidecar.read_text())
+    assert manifest["sha256"] == hashlib.sha256(payload).hexdigest()
+
+
+@pytest.mark.parametrize("bad_payload", ["[]", '"just-a-string"'])
+def test_is_remote_more_recent_corrupt_sidecar_failsafe(tmp_path, bad_payload):
+    """Corrupt sidecar with no local file must be treated as stale (refetch)."""
+    payload = b"abc"
+    handler, _ = _ephemeral_handler_factory(payload)
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
+    target = tmp_path / "no-file.bin"
+    target.with_suffix(".bin.manifest.json").write_text(bad_payload)
+
+    head = client.head("https://example.test/data")
+    assert is_remote_more_recent(head, target) is True

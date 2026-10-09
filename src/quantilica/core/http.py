@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import datetime as dt
 import email.utils
 import hashlib
@@ -22,7 +23,12 @@ import httpx2
 from .exceptions import FetchError, StorageError
 from .files import check_free_space, ensure_parent, write_bytes_atomic
 from .logging import bind_context, get_logger, log_step
-from .manifests import DownloadManifest, write_manifest_sidecar
+from .manifests import (
+    DownloadManifest,
+    SourceMetadata,
+    manifest_sidecar_path,
+    write_manifest_sidecar,
+)
 from .retry import RetryError, async_retry_call, exponential_delay, retry_call
 
 ProgressCallback = Callable[[int, int], None]
@@ -705,6 +711,21 @@ class HttpClient:
         If the file exists and is up to date according to ``Last-Modified``
         (and optionally ``Content-Length``), it is not downloaded.
 
+        **Ephemeral mode contract:** when the raw file is absent but its
+        ``<target>.manifest.json`` sidecar survives, freshness is judged
+        from the sidecar metadata instead of the file stat — a matching
+        remote ``ETag``, or ``Content-Length`` + non-newer ``Last-Modified``,
+        skips the download entirely and the file is *not* re-created
+        (sidecar-only retention). If the sidecar exists but is corrupted
+        (e.g. not a JSON object), the check fails safe: the file is simply
+        (re)downloaded.
+
+        The provenance sidecar written after a successful GET always records
+        the headers captured from the GET stream itself (``ETag`` /
+        ``Last-Modified``), so a failed freshness HEAD (e.g. HTTP 404/5xx
+        before the GET) never aborts the download and never leaks a
+        partially-bound ``head`` variable into the manifest.
+
         Interrupted streams are resumed with ``Range`` requests across
         attempts (when the server honors them); servers that ignore
         ``Range`` fall back to restart-from-zero.
@@ -748,9 +769,18 @@ class HttpClient:
                     "will (re)download"
                 )
             else:
-                if not force and target.exists():
-                    if not _is_remote_more_recent(head, target, check_size=check_size):
-                        self.logger.debug(f"File is up to date: {target.name}")
+                if not force:
+                    up_to_date, ephemeral = _head_fresh(
+                        head, target, check_size=check_size
+                    )
+                    if up_to_date:
+                        if ephemeral:
+                            self.logger.debug(
+                                f"File (ephemeral) is up to date via manifest: "
+                                f"{target.name}"
+                            )
+                        else:
+                            self.logger.debug(f"File is up to date: {target.name}")
                         return target
 
             outcome: dict[str, Any] = {}
@@ -795,6 +825,7 @@ class HttpClient:
                                     f"(required: {req_mb:.1f} MB)"
                                 )
 
+                            outcome["etag"] = response.headers.get("ETag")
                             outcome["last_modified"] = response.headers.get(
                                 "Last-Modified"
                             )
@@ -863,15 +894,20 @@ class HttpClient:
                     with contextlib.suppress(OSError):
                         temp_path.unlink()
 
-            _sync_mtime_from_last_modified(target, outcome["last_modified"])
+            _sync_mtime_from_last_modified(target, outcome.get("last_modified"))
+            # ``head`` may be unbound when the freshness check failed with
+            # a FetchError (e.g. HEAD 404/5xx) — always read headers captured
+            # from the successful GET stream in ``outcome`` instead.
             _write_manifest(
                 target,
                 source_id=source_id,
                 dataset_id=dataset_id,
-                url=outcome["final_url"],
+                url=outcome.get("final_url", url),
                 sha256=outcome["sha256"],
                 size_bytes=outcome["size_bytes"],
                 producer=producer,
+                etag=outcome.get("etag"),
+                last_modified=outcome.get("last_modified"),
             )
             return target
 
@@ -1416,9 +1452,18 @@ class AsyncHttpClient:
                     "will (re)download"
                 )
             else:
-                if not force and target.exists():
-                    if not _is_remote_more_recent(head, target, check_size=check_size):
-                        self.logger.debug(f"File is up to date: {target.name}")
+                if not force:
+                    up_to_date, ephemeral = _head_fresh(
+                        head, target, check_size=check_size
+                    )
+                    if up_to_date:
+                        if ephemeral:
+                            self.logger.debug(
+                                f"File (ephemeral) is up to date via manifest: "
+                                f"{target.name}"
+                            )
+                        else:
+                            self.logger.debug(f"File is up to date: {target.name}")
                         return target
 
             outcome: dict[str, Any] = {}
@@ -1450,6 +1495,7 @@ class AsyncHttpClient:
                             total = downloaded + int(
                                 response.headers.get("Content-Length", 0) or 0
                             )
+                            outcome["etag"] = response.headers.get("ETag")
                             outcome["last_modified"] = response.headers.get(
                                 "Last-Modified"
                             )
@@ -1515,15 +1561,20 @@ class AsyncHttpClient:
                     with contextlib.suppress(OSError):
                         temp_path.unlink()
 
-            _sync_mtime_from_last_modified(target, outcome["last_modified"])
+            _sync_mtime_from_last_modified(target, outcome.get("last_modified"))
+            # ``head`` may be unbound when the freshness check failed with
+            # a FetchError (e.g. HEAD 404/5xx) — always read headers captured
+            # from the successful GET stream in ``outcome`` instead.
             _write_manifest(
                 target,
                 source_id=source_id,
                 dataset_id=dataset_id,
-                url=outcome["final_url"],
+                url=outcome.get("final_url", url),
                 sha256=outcome["sha256"],
                 size_bytes=outcome["size_bytes"],
                 producer=producer,
+                etag=outcome.get("etag"),
+                last_modified=outcome.get("last_modified"),
             )
             return target
 
@@ -1615,6 +1666,8 @@ def _write_manifest(
     sha256: str,
     size_bytes: int,
     producer: str | None,
+    etag: str | None = None,
+    last_modified: str | None = None,
 ) -> None:
     manifest = DownloadManifest.from_digest(
         source_id=source_id,
@@ -1625,7 +1678,108 @@ def _write_manifest(
         path=str(target.absolute()),
         producer=producer,
     )
+    if etag or last_modified:
+        manifest = dataclasses.replace(
+            manifest,
+            source_meta=SourceMetadata(etag=etag, last_modified=last_modified),
+        )
     write_manifest_sidecar(target, manifest)
+
+
+def _parse_http_datetime(value: str | None) -> dt.datetime | None:
+    """Parse an RFC 1123/ISO-8601 date string into an aware datetime."""
+    if not value:
+        return None
+    try:
+        parsed = email.utils.parsedate_to_datetime(value)
+    except (ValueError, TypeError):
+        parsed = None
+    if parsed is None:
+        try:
+            parsed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.UTC)
+    return parsed
+
+
+def _is_up_to_date_via_manifest(
+    response: httpx2.Response,
+    manifest: DownloadManifest,
+    *,
+    check_size: bool = True,
+) -> bool:
+    """Check up-to-date status using a sidecar manifest instead of file stat.
+
+    Used when the raw file was deleted (ephemeral retention) but its
+    ``<file>.manifest.json`` sidecar survives. A match on either remote
+    ``ETag`` or (size + Last-Modified) means the remote content is
+    unchanged since the manifest was written.
+    """
+    source_meta = manifest.source_meta
+
+    # (a) Strong signal: matching ETag means remote content is identical.
+    remote_etag = response.headers.get("ETag")
+    if (
+        remote_etag
+        and source_meta is not None
+        and source_meta.etag
+        and remote_etag == source_meta.etag
+    ):
+        return True
+
+    # (b) Weaker signal: same advertised size and Last-Modified not newer
+    # than what we recorded at fetch time.
+    content_length = response.headers.get("Content-Length")
+    remote_size: int | None = None
+    if content_length:
+        with contextlib.suppress(ValueError, TypeError):
+            remote_size = int(content_length)
+    remote_lm = _parse_http_datetime(response.headers.get("Last-Modified"))
+    if remote_lm is None:
+        return False
+    local_lm: dt.datetime | None = None
+    if source_meta is not None and source_meta.last_modified:
+        local_lm = _parse_http_datetime(source_meta.last_modified)
+    if local_lm is None and manifest.fetched_at:
+        local_lm = _parse_http_datetime(manifest.fetched_at)
+    if local_lm is None:
+        return False
+    if remote_lm > local_lm:
+        return False
+    if check_size:
+        return remote_size is not None and remote_size == manifest.size_bytes
+    return True
+
+
+def _head_fresh(
+    response: httpx2.Response,
+    target: Path,
+    *,
+    check_size: bool = True,
+) -> tuple[bool, bool]:
+    """Return ``(up_to_date, ephemeral)`` for the download freshness check.
+
+    ``ephemeral`` is ``True`` when the raw local file is missing but the
+    manifest sidecar attests the remote content is still current — the
+    download is then skipped without re-creating the file.
+    """
+    if target.exists():
+        return (
+            not _is_remote_more_recent(response, target, check_size=check_size),
+            False,
+        )
+    sidecar = manifest_sidecar_path(target)
+    if not sidecar.exists():
+        return (False, False)
+    try:
+        manifest = DownloadManifest.read_json(sidecar)
+    except (AttributeError, OSError, TypeError, ValueError):
+        # Corrupted/unexpected sidecar payload -> fail-safe: redownload.
+        return (False, False)
+    fresh = _is_up_to_date_via_manifest(response, manifest, check_size=check_size)
+    return (bool(fresh), bool(fresh))
 
 
 def is_remote_more_recent(
@@ -1638,9 +1792,23 @@ def is_remote_more_recent(
 
     Shared freshness predicate used by both ``download`` (sync) and
     ``check`` (verification-only) flows so they always agree.
+
+    When the local file was deleted (ephemeral retention) but the
+    ``<file>.manifest.json`` sidecar survives, freshness is judged against
+    the manifest metadata instead of the missing file stat.
     """
     if not local_path.exists():
-        return True
+        sidecar = manifest_sidecar_path(local_path)
+        if not sidecar.exists():
+            return True
+        try:
+            manifest = DownloadManifest.read_json(sidecar)
+        except (AttributeError, OSError, TypeError, ValueError):
+            # Corrupted/unexpected sidecar payload -> fail-safe: refetch.
+            return True
+        if not _is_up_to_date_via_manifest(response, manifest, check_size=check_size):
+            return True
+        return False
 
     # 1. Check size if requested
     if check_size:
