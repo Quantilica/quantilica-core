@@ -41,6 +41,7 @@ DEFAULT_STREAM_CHUNK_SIZE = 64 * 1024
 
 DEFAULT_USER_AGENT = "quantilica-core"
 DEFAULT_TIMEOUT = 60.0
+DEFAULT_MAX_RESUMES = 1000
 RETRY_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
 DEFAULT_LIMITS = httpx2.Limits(
@@ -180,6 +181,7 @@ __all__ = [
     "AsyncHttpClient",
     "BROWSER_HEADERS",
     "DEFAULT_LIMITS",
+    "DEFAULT_MAX_RESUMES",
     "DEFAULT_RETRY_EXCEPTIONS",
     "DEFAULT_STREAM_CHUNK_SIZE",
     "DEFAULT_TIMEOUT",
@@ -207,6 +209,7 @@ class HttpClient:
         follow_redirects: bool = True,
         attempts: int = 3,
         retry_base_delay: float = 1.0,
+        max_resumes: int = DEFAULT_MAX_RESUMES,
         verify: VerifyOption = True,
         transport: httpx2.BaseTransport | None = None,
         logger: logging.Logger | None = None,
@@ -235,6 +238,7 @@ class HttpClient:
         self.follow_redirects = follow_redirects
         self.attempts = attempts
         self.retry_base_delay = retry_base_delay
+        self.max_resumes = max_resumes
         self.verify = verify
         self.transport = transport
         self.logger = logger or get_logger(__name__)
@@ -730,6 +734,14 @@ class HttpClient:
         attempts (when the server honors them); servers that ignore
         ``Range`` fall back to restart-from-zero.
 
+        The retry budget is progress-aware: an attempt that fails after
+        advancing the partial file (with the server honoring ``Range``)
+        does not consume ``attempts``; such resumes are capped
+        independently by ``max_resumes`` (a :class:`RetryError` is raised
+        when exceeded) and wait only ``retry_base_delay`` between them.
+        Attempts without progress, or where the server ignores ``Range``
+        and restarts from zero, still consume ``attempts``.
+
         ``progress`` is invoked as ``(downloaded_bytes, total_bytes)`` after
         each chunk is written. ``total_bytes`` is ``0`` when the remote does
         not advertise ``Content-Length``.
@@ -794,8 +806,13 @@ class HttpClient:
             digest = hashlib.sha256()
             last_error: BaseException | None = None
             succeeded = False
+            failures = 0
+            resumes = 0
+            total = 0
             try:
-                for attempt in range(1, self.attempts + 1):
+                while True:
+                    start_downloaded = downloaded
+                    restarted = False
                     req_headers = dict(headers or {})
                     if downloaded:
                         req_headers["Range"] = f"bytes={downloaded}-"
@@ -811,6 +828,7 @@ class HttpClient:
                                     f"Range ignored for {target.name}; restarting"
                                 )
                                 downloaded = 0
+                                restarted = True
                                 digest = hashlib.sha256()
                             total = downloaded + int(
                                 response.headers.get("Content-Length", 0) or 0
@@ -840,6 +858,7 @@ class HttpClient:
                                 # us — restart cleanly instead of corrupting.
                                 mode = "wb"
                                 downloaded = 0
+                                restarted = True
                                 digest = hashlib.sha256()
                             try:
                                 with open(temp_path, mode) as stream:
@@ -867,6 +886,10 @@ class HttpClient:
                             )
                             downloaded = 0
                             digest = hashlib.sha256()
+                            last_error = exc
+                            failures += 1
+                            if failures >= self.attempts:
+                                break
                             continue
                         if exc.status_code not in RETRY_STATUS_CODES:
                             raise
@@ -876,10 +899,29 @@ class HttpClient:
                     else:
                         succeeded = True
                         break
-                    if attempt == self.attempts:
+                    if downloaded > start_downloaded and not restarted:
+                        # Progress made (and the server honored ``Range``
+                        # when one was sent): this failure does not consume
+                        # the normal attempt budget, only ``max_resumes``.
+                        resumes += 1
+                        if resumes > self.max_resumes:
+                            raise RetryError(
+                                f"Operation exceeded {self.max_resumes} resume(s) "
+                                f"({downloaded} bytes downloaded)",
+                                attempts=failures + resumes,
+                            ) from last_error
+                        self.logger.info(
+                            f"Resuming {target.name} after interruption: "
+                            f"{downloaded}/{total} bytes "
+                            f"(resume {resumes}/{self.max_resumes})"
+                        )
+                        time.sleep(self.retry_base_delay)
+                        continue
+                    failures += 1
+                    if failures >= self.attempts:
                         break
                     time.sleep(
-                        exponential_delay(attempt, base_delay=self.retry_base_delay)
+                        exponential_delay(failures, base_delay=self.retry_base_delay)
                     )
                 if not succeeded:
                     raise RetryError(
@@ -983,6 +1025,7 @@ class AsyncHttpClient:
         follow_redirects: bool = True,
         attempts: int = 3,
         retry_base_delay: float = 1.0,
+        max_resumes: int = DEFAULT_MAX_RESUMES,
         verify: VerifyOption = True,
         transport: httpx2.AsyncBaseTransport | None = None,
         logger: logging.Logger | None = None,
@@ -1008,6 +1051,7 @@ class AsyncHttpClient:
         self.follow_redirects = follow_redirects
         self.attempts = attempts
         self.retry_base_delay = retry_base_delay
+        self.max_resumes = max_resumes
         self.verify = verify
         self.transport = transport
         self.logger = logger or get_logger(__name__)
@@ -1418,7 +1462,8 @@ class AsyncHttpClient:
     ) -> Path:
         """Stream a URL to disk asynchronously with freshness check and manifest.
 
-        See :meth:`HttpClient.download_with_manifest` for parameter semantics.
+        See :meth:`HttpClient.download_with_manifest` for parameter semantics
+        and the progress-aware retry budget (``attempts`` / ``max_resumes``).
 
         Args:
             url: The URL to download.
@@ -1475,8 +1520,13 @@ class AsyncHttpClient:
             digest = hashlib.sha256()
             last_error: BaseException | None = None
             succeeded = False
+            failures = 0
+            resumes = 0
+            total = 0
             try:
-                for attempt in range(1, self.attempts + 1):
+                while True:
+                    start_downloaded = downloaded
+                    restarted = False
                     req_headers = dict(headers or {})
                     if downloaded:
                         req_headers["Range"] = f"bytes={downloaded}-"
@@ -1491,6 +1541,7 @@ class AsyncHttpClient:
                                     f"Range ignored for {target.name}; restarting"
                                 )
                                 downloaded = 0
+                                restarted = True
                                 digest = hashlib.sha256()
                             total = downloaded + int(
                                 response.headers.get("Content-Length", 0) or 0
@@ -1508,6 +1559,7 @@ class AsyncHttpClient:
                             ):
                                 mode = "wb"
                                 downloaded = 0
+                                restarted = True
                                 digest = hashlib.sha256()
                             try:
                                 with open(temp_path, mode) as stream:
@@ -1534,6 +1586,10 @@ class AsyncHttpClient:
                             )
                             downloaded = 0
                             digest = hashlib.sha256()
+                            last_error = exc
+                            failures += 1
+                            if failures >= self.attempts:
+                                break
                             continue
                         if exc.status_code not in RETRY_STATUS_CODES:
                             raise
@@ -1543,10 +1599,30 @@ class AsyncHttpClient:
                     else:
                         succeeded = True
                         break
-                    if attempt == self.attempts:
+                    if downloaded > start_downloaded and not restarted:
+                        # Progress made (and the server honored ``Range``
+                        # when one was sent): this failure does not consume
+                        # the normal attempt budget, only ``max_resumes``.
+                        resumes += 1
+                        if resumes > self.max_resumes:
+                            raise RetryError(
+                                f"Async operation exceeded {self.max_resumes} "
+                                "resume(s) "
+                                f"({downloaded} bytes downloaded)",
+                                attempts=failures + resumes,
+                            ) from last_error
+                        self.logger.info(
+                            f"Resuming {target.name} after interruption: "
+                            f"{downloaded}/{total} bytes "
+                            f"(resume {resumes}/{self.max_resumes})"
+                        )
+                        await asyncio.sleep(self.retry_base_delay)
+                        continue
+                    failures += 1
+                    if failures >= self.attempts:
                         break
                     await asyncio.sleep(
-                        exponential_delay(attempt, base_delay=self.retry_base_delay)
+                        exponential_delay(failures, base_delay=self.retry_base_delay)
                     )
                 if not succeeded:
                     raise RetryError(
