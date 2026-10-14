@@ -5,6 +5,13 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.11.0] - 2026-10-14
+
+### Adicionado
+
+- `http`: `max_resumes` (keyword-only, padrão `DEFAULT_MAX_RESUMES = 1000`) em `HttpClient` e `AsyncHttpClient`. O retry de `download_with_manifest` passou a considerar progresso: uma tentativa que falha depois de avançar o arquivo parcial, com o servidor honrando `Range`, não consome `attempts`; fica limitada por `max_resumes` (excedido, levanta `RetryError`) e espera só `retry_base_delay` entre as retomadas. Reinício do zero (servidor ignora `Range`), parcial divergente e `416` continuam consumindo tentativas. Resolve servidores que derrubam a conexão a cada poucos MB (por exemplo `balanca.economia.gov.br`, reset a cada ~3,8 MB).
+- `http`: `DEFAULT_MAX_RESUMES` exportado em `__all__`.
+
 ## [0.10.1] - 2026-10-08
 
 ### Corrigido
