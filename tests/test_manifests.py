@@ -14,6 +14,7 @@ from quantilica.core.manifests import (
     QualitySignals,
     RunManifest,
     SourceMetadata,
+    read_manifest_sidecar,
     write_manifest_sidecar,
 )
 
@@ -227,3 +228,42 @@ def test_execution_manifest_alias_is_run_manifest():
     from quantilica.core.manifests import ExecutionManifest, RunManifest
 
     assert ExecutionManifest is RunManifest
+
+
+def test_read_manifest_sidecar_roundtrip(tmp_path):
+    target = tmp_path / "data.bin"
+    target.write_bytes(b"payload")
+    manifest = DownloadManifest.from_file(
+        source_id="s", dataset_id="d", url="http://x", file_path=target
+    )
+    write_manifest_sidecar(target, manifest)
+    loaded = read_manifest_sidecar(target)
+    assert loaded is not None
+    assert loaded.source_id == "s"
+    assert loaded.sha256 == manifest.sha256
+    assert loaded.size_bytes == len(b"payload")
+
+
+def test_read_manifest_sidecar_fills_missing_size(tmp_path):
+    target = tmp_path / "data.bin"
+    target.write_bytes(b"12345")
+    sidecar = tmp_path / "data.bin.manifest.json"
+    sidecar.write_text(json.dumps({"source_id": "s", "dataset_id": "d"}))
+    loaded = read_manifest_sidecar(target)
+    assert loaded is not None
+    assert loaded.size_bytes == 5
+
+
+def test_read_manifest_sidecar_missing_returns_none(tmp_path):
+    target = tmp_path / "data.bin"
+    target.write_bytes(b"x")
+    assert read_manifest_sidecar(target) is None
+
+
+def test_read_manifest_sidecar_corrupt_warns_and_returns_none(tmp_path, caplog):
+    target = tmp_path / "data.bin"
+    target.write_bytes(b"x")
+    (tmp_path / "data.bin.manifest.json").write_text("{not json")
+    with caplog.at_level("WARNING"):
+        assert read_manifest_sidecar(target) is None
+    assert "Invalid manifest" in caplog.text

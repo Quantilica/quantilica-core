@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+import logging
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,8 @@ from .files import sha256_bytes, sha256_file, write_text_atomic
 # Current DownloadManifest schema version. Readers treat a missing
 # ``manifest_version`` field as version 1.
 MANIFEST_VERSION = 2
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -352,6 +355,36 @@ def write_manifest_sidecar(
         Path: The sidecar path that was written.
     """
     return manifest.write_json(manifest_sidecar_path(target))
+
+
+def read_manifest_sidecar(target: str | Path) -> DownloadManifest | None:
+    """Read the manifest sidecar of ``target``, tolerating absence or damage.
+
+    Args:
+        target: Path of the downloaded artifact.
+
+    Returns:
+        DownloadManifest | None: The manifest, or None when the sidecar does
+            not exist or is invalid (a warning is logged in the latter case).
+            A missing or zero ``size_bytes`` is filled from the size of
+            ``target`` when it exists, else 0.
+    """
+    target_path = Path(target)
+    sidecar = manifest_sidecar_path(target_path)
+    if not sidecar.exists():
+        return None
+    try:
+        manifest = DownloadManifest.read_json(sidecar)
+    except (json.JSONDecodeError, ValueError, TypeError, OSError) as exc:
+        logger.warning("Invalid manifest %s: %s", sidecar, exc)
+        return None
+    if not manifest.size_bytes:
+        try:
+            size_bytes = target_path.stat().st_size
+        except OSError:
+            size_bytes = 0
+        manifest = replace(manifest, size_bytes=size_bytes)
+    return manifest
 
 
 @dataclass(frozen=True)

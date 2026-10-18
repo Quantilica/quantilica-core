@@ -15,6 +15,7 @@ from .manifests import (
     DownloadManifest,
     ExecutionManifest,
     RunManifest,
+    read_manifest_sidecar,
     write_manifest_sidecar,
 )
 from .sync import (
@@ -50,6 +51,7 @@ __all__ = [
     "decompress_archive",
     "is_manifest_valid",
     "parse_ftp_list_line",
+    "read_manifest_sidecar",
     "should_skip",
     "write_manifest_sidecar",
 ]
