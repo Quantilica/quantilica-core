@@ -5,6 +5,12 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.12.0] - 2026-10-18
+
+### Adicionado
+
+- `manifests`: `read_manifest_sidecar(target)` para leitura resiliente do sidecar `<target>.manifest.json`, com retorno `None` quando o sidecar não existe ou está corrompido (com warning) e preenchimento automático de `size_bytes` e `path` a partir do arquivo de origem quando omitidos.
+
 ## [0.11.0] - 2026-10-14
 
 ### Adicionado
