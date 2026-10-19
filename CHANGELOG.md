@@ -5,6 +5,12 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.12.1] - 2026-10-19
+
+### Corrigido
+
+- `files`: `check_free_space` não cria mais diretórios. Antes, um caminho sem extensão era tratado como diretório e recebia `mkdir`. Num alvo de download sem extensão (por exemplo, um arquivo nomeado pelo texto de um link, como "API pública"), a pasta era criada no lugar do arquivo e o download falhava com `IsADirectoryError` no `os.replace` final. Agora o espaço livre é medido no ancestral existente mais próximo.
+
 ## [0.12.0] - 2026-10-18
 
 ### Adicionado
