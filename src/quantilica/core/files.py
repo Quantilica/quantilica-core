@@ -47,9 +47,12 @@ def check_free_space(
     Returns:
         bool: True if there is sufficient free space, False otherwise.
     """
-    target = Path(path).expanduser()
-    dir_path = target if target.is_dir() or not target.suffix else target.parent
-    dir_path.mkdir(parents=True, exist_ok=True)
+    # Mede no ancestral existente mais próximo, sem criar nada: inferir
+    # "diretório" pela falta de extensão criava uma pasta no lugar de um
+    # arquivo sem extensão (ex.: "API pública") e quebrava o rename final.
+    dir_path = Path(path).expanduser()
+    while not dir_path.is_dir() and dir_path != dir_path.parent:
+        dir_path = dir_path.parent
     try:
         usage = shutil.disk_usage(dir_path)
         return usage.free >= (required_bytes + margin_bytes)

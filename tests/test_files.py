@@ -85,6 +85,13 @@ def test_check_free_space(tmp_path):
     assert check_free_space(tmp_path, required_bytes=10**18) is False
 
 
+def test_check_free_space_never_creates_target_without_suffix(tmp_path):
+    target = tmp_path / "2026-05" / "API pública"
+    assert check_free_space(target, required_bytes=100) is True
+    assert not target.exists()
+    assert not target.parent.exists()
+
+
 # ---------------------------------------------------------------------------
 # decompress_archive
 # ---------------------------------------------------------------------------
