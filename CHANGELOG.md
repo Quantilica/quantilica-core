@@ -30,7 +30,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 - `http`: `is_remote_more_recent`, `_head_fresh` e `download_with_manifest`
   verificam o sidecar `<target>.manifest.json` quando o arquivo local de dados
-  não existe (retenção efêmera), evitando re-download redundante quando o
+  não existe (sem retenção local), evitando re-download redundante quando o
   remoto permanece inalterado (`manifest-fresh`).
 - `http`: `download_with_manifest` inicializa `etag` e `last_modified` a partir
   dos headers da resposta GET de streaming caso o HEAD retorne 404, prevenindo
