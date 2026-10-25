@@ -263,7 +263,7 @@ def test_decompress_archive_7z_uses_subprocess_fallback(tmp_path, monkeypatch):
     monkeypatch.setattr(files_mod.subprocess, "run", fake_run)
     out = decompress_archive(archive, output_dir=out_dir)
     assert called["cmd"][0] == "7z"
-    assert str(archive) in str(called["cmd"])
+    assert str(archive) in called["cmd"]
     assert out == out_dir / "payload.csv"
 
 
