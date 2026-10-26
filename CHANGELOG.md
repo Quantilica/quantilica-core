@@ -5,6 +5,12 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [Unreleased]
+
+### Adicionado
+
+- `lake`: novo módulo `quantilica.core.lake`, sem dependências novas, com o contrato de layout do lake Parquet particionado no estilo Hive: `lake_root()` (`QUANTILICA_LAKE_DIR`, com fallback para `QUANTILICA_DATA_DIR/lake` e `~/data/lake`), `file_key()`, `encode_partition_value()`, `partition_dir()` e `parse_partition_path()`, `DatasetDescriptor` (leitura e escrita atômica de `_dataset.json`), `dataset_lock()` (`flock` em `<dataset>/.lock`, sem efeito onde não há `fcntl`) e `load_lake_converter()` (entry point `quantilica.lake`). Tudo exportado em `quantilica.core`.
+
 ## [0.12.1] - 2026-10-19
 
 ### Corrigido

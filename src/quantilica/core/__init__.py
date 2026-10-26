@@ -10,6 +10,16 @@ from .http import (
     RateLimiter,
     RetryableHttpStatusError,
 )
+from .lake import (
+    DatasetDescriptor,
+    dataset_lock,
+    encode_partition_value,
+    file_key,
+    lake_root,
+    load_lake_converter,
+    parse_partition_path,
+    partition_dir,
+)
 from .manifests import (
     DatasetManifest,
     DownloadManifest,
@@ -35,6 +45,7 @@ except PackageNotFoundError:
 
 __all__ = [
     "AsyncHttpClient",
+    "DatasetDescriptor",
     "DatasetManifest",
     "DownloadManifest",
     "ExecutionManifest",
@@ -48,9 +59,16 @@ __all__ = [
     "RetryableHttpStatusError",
     "RunManifest",
     "__version__",
+    "dataset_lock",
     "decompress_archive",
+    "encode_partition_value",
+    "file_key",
     "is_manifest_valid",
+    "lake_root",
+    "load_lake_converter",
     "parse_ftp_list_line",
+    "parse_partition_path",
+    "partition_dir",
     "read_manifest_sidecar",
     "should_skip",
     "write_manifest_sidecar",
