@@ -291,10 +291,12 @@ def test_descriptor_load_missing_raises(tmp_path):
 
 # --- dataset_lock ------------------------------------------------------------
 
-needs_fcntl = pytest.mark.skipif(lake.fcntl is None, reason="requires fcntl")
+needs_lock = pytest.mark.skipif(
+    lake.fcntl is None and lake.msvcrt is None, reason="requires fcntl or msvcrt"
+)
 
 
-@needs_fcntl
+@needs_lock
 def test_dataset_lock_creates_directory_and_lock_file(tmp_path):
     dataset_dir = tmp_path / "src" / "ds"
     with dataset_lock(dataset_dir):
@@ -302,7 +304,7 @@ def test_dataset_lock_creates_directory_and_lock_file(tmp_path):
     assert (dataset_dir / ".lock").is_file()  # left in place
 
 
-@needs_fcntl
+@needs_lock
 def test_dataset_lock_is_exclusive_non_blocking(tmp_path):
     with dataset_lock(tmp_path):
         with pytest.raises(BlockingIOError):
@@ -312,7 +314,7 @@ def test_dataset_lock_is_exclusive_non_blocking(tmp_path):
         pass
 
 
-@needs_fcntl
+@needs_lock
 def test_dataset_lock_released_on_exception(tmp_path):
     with pytest.raises(RuntimeError):
         with dataset_lock(tmp_path):
@@ -327,7 +329,7 @@ def _hold_lock(dataset_dir: str, acquired, release) -> None:
         release.wait(10)
 
 
-@needs_fcntl
+@needs_lock
 def test_dataset_lock_excludes_other_processes(tmp_path):
     ctx = multiprocessing.get_context("spawn")
     acquired, release = ctx.Event(), ctx.Event()
@@ -352,8 +354,9 @@ def test_dataset_lock_excludes_other_processes(tmp_path):
             time.sleep(0.05)
 
 
-def test_dataset_lock_is_noop_without_fcntl(monkeypatch, tmp_path):
+def test_dataset_lock_is_noop_without_lock_backend(monkeypatch, tmp_path):
     monkeypatch.setattr(lake, "fcntl", None)
+    monkeypatch.setattr(lake, "msvcrt", None)
     dataset_dir = tmp_path / "missing"
     with dataset_lock(dataset_dir):
         with dataset_lock(dataset_dir, blocking=False):  # no exclusion

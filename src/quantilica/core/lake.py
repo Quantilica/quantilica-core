@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields
@@ -30,10 +31,15 @@ from typing import Any
 
 from .files import write_text_atomic
 
-try:  # POSIX only; on Windows the dataset lock degrades to a no-op.
+try:  # POSIX
     import fcntl
 except ImportError:  # pragma: no cover - exercised via monkeypatch in tests
     fcntl = None  # type: ignore[assignment]
+
+try:  # Windows
+    import msvcrt
+except ImportError:
+    msvcrt = None  # type: ignore[assignment]
 
 LAKE_DIR_ENV = "QUANTILICA_LAKE_DIR"
 DATA_DIR_ENV = "QUANTILICA_DATA_DIR"
@@ -236,16 +242,21 @@ class DatasetDescriptor:
 
 @contextmanager
 def dataset_lock(dataset_dir: Path, *, blocking: bool = True) -> Iterator[None]:
-    """Hold an exclusive ``flock`` on ``<dataset_dir>/.lock``.
+    """Hold an exclusive lock on ``<dataset_dir>/.lock``.
 
     One writer per dataset; readers take no lock. With ``blocking=False`` a
-    held lock raises ``BlockingIOError`` immediately. Where ``fcntl`` is
-    unavailable (Windows) this is a no-op: callers get no mutual exclusion.
-    The lock file is left in place on release, since removing it would race
-    with another process waiting on it.
+    held lock raises ``BlockingIOError`` immediately. POSIX uses ``flock``;
+    Windows locks the file's first byte with ``msvcrt.locking``. Elsewhere
+    this is a no-op: callers get no mutual exclusion. The lock file is left
+    in place on release, since removing it would race with another process
+    waiting on it.
     """
     if fcntl is None:
-        yield
+        if msvcrt is None:
+            yield
+            return
+        with _msvcrt_lock(Path(dataset_dir), blocking=blocking):
+            yield
         return
     directory = Path(dataset_dir)
     directory.mkdir(parents=True, exist_ok=True)
@@ -256,6 +267,34 @@ def dataset_lock(dataset_dir: Path, *, blocking: bool = True) -> Iterator[None]:
             yield
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def _msvcrt_lock(directory: Path, *, blocking: bool) -> Iterator[None]:
+    """``dataset_lock`` on Windows: lock byte 0 of the lock file.
+
+    ``LK_NBLCK`` fails at once on a held lock; blocking mode retries it, since
+    ``LK_LOCK`` gives up after ten one-second attempts.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / LOCK_FILENAME).open("a+") as handle:
+        fd = handle.fileno()
+        while True:
+            os.lseek(fd, 0, os.SEEK_SET)
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                break
+            except OSError as exc:
+                if not blocking:
+                    raise BlockingIOError(
+                        f"dataset lock held: {directory / LOCK_FILENAME}"
+                    ) from exc
+                time.sleep(0.1)
+        try:
+            yield
+        finally:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
 
 
 def load_lake_converter(source_id: str) -> Any | None:
