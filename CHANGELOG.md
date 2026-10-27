@@ -5,6 +5,12 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [Unreleased]
+
+### Alterado
+
+- `lake.dataset_lock()` passa a dar exclusão mútua também no Windows, com `msvcrt.locking` no primeiro byte de `<dataset>/.lock`; antes era um no-op sem `fcntl`, e dois conversores no mesmo dataset podiam gravar `_dataset.json` ao mesmo tempo.
+
 ## [0.13.0] - 2026-10-27
 
 ### Adicionado
