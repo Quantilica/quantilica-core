@@ -21,7 +21,12 @@ from typing import Any
 import httpx2
 
 from .exceptions import FetchError, StorageError
-from .files import check_free_space, ensure_parent, write_bytes_atomic
+from .files import (
+    check_free_space,
+    check_payload,
+    ensure_parent,
+    write_bytes_atomic,
+)
 from .logging import bind_context, get_logger, log_step
 from .manifests import (
     DownloadManifest,
@@ -930,6 +935,7 @@ class HttpClient:
                     ) from last_error
                 outcome["sha256"] = digest.hexdigest()
                 outcome["size_bytes"] = downloaded
+                check_payload(temp_path, target.name)
                 temp_path.replace(target)
             finally:
                 if temp_path.exists():
@@ -1631,6 +1637,7 @@ class AsyncHttpClient:
                     ) from last_error
                 outcome["sha256"] = digest.hexdigest()
                 outcome["size_bytes"] = downloaded
+                check_payload(temp_path, target.name)
                 temp_path.replace(target)
             finally:
                 if temp_path.exists():

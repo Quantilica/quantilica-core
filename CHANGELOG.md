@@ -7,6 +7,10 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Unreleased]
 
+### Adicionado
+
+- `files.check_payload()` e `exceptions.CorruptPayloadError`: rejeitam o download cujo conteúdo contradiz o nome (página HTML salva como `.csv`/`.zip`, ZIP ou XLSX com CRC inválido, 7z que falha no `7z t`). Os downloads HTTP e FTP chamam a checagem antes de substituir o arquivo e de gravar o sidecar, então um arquivo quebrado não chega a ser registrado; no FTP o erro é transitório e o download é refeito. `write_stream_atomic` ganha o parâmetro `validate`.
+
 ### Alterado
 
 - `lake.dataset_lock()` passa a dar exclusão mútua também no Windows, com `msvcrt.locking` no primeiro byte de `<dataset>/.lock`; antes era um no-op sem `fcntl`, e dois conversores no mesmo dataset podiam gravar `_dataset.json` ao mesmo tempo.

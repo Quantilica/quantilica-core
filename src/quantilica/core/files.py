@@ -13,7 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO
 
-from .exceptions import StorageError
+from .exceptions import CorruptPayloadError, StorageError
 
 DEFAULT_CHUNK_SIZE = 1024 * 1024
 DEFAULT_MIN_FREE_MARGIN = 100 * 1024 * 1024  # 100 MB
@@ -188,9 +188,58 @@ def write_text_atomic(
     return write_bytes_atomic(target, data)
 
 
+_DATA_SUFFIXES = frozenset(
+    {".csv", ".txt", ".zip", ".7z", ".xls", ".xlsx", ".json", ".dbc", ".dbf"}
+)
+_HTML_PREFIXES = (b"<!doctype html", b"<html")
+
+
+def check_payload(path: str | os.PathLike[str], name: str | None = None) -> None:
+    """Reject a downloaded file whose content contradicts its name.
+
+    ``name`` is the final file name (``path`` may be a temporary file). A data
+    file (``.csv``, ``.zip``...) that starts with an HTML document is a portal's
+    error page; a ``.zip``/``.xlsx`` must pass ``testzip``; a ``.7z`` must pass
+    ``7z t`` (skipped when no 7z binary is installed).
+
+    Raises:
+        CorruptPayloadError: If the content is not valid for the extension.
+    """
+    path = Path(path)
+    suffix = Path(name or path.name).suffix.lower()
+    if suffix not in _DATA_SUFFIXES:
+        return
+    with open(path, "rb") as fh:
+        head = fh.read(512).lstrip(b"\xef\xbb\xbf \t\r\n").lower()
+    if head.startswith(_HTML_PREFIXES):
+        raise CorruptPayloadError(f"{name or path.name}: página HTML no lugar do dado")
+    if suffix in (".zip", ".xlsx"):
+        try:
+            with zipfile.ZipFile(path) as archive:
+                bad = archive.testzip()
+        except (zipfile.BadZipFile, OSError, EOFError) as exc:
+            raise CorruptPayloadError(
+                f"{name or path.name}: ZIP inválido: {exc}"
+            ) from exc
+        if bad is not None:
+            raise CorruptPayloadError(f"{name or path.name}: CRC inválido em {bad}")
+    elif suffix == ".7z":
+        tool = shutil.which("7z") or shutil.which("7zz") or shutil.which("7za")
+        if tool is None:
+            return
+        proc = subprocess.run(
+            [tool, "t", "-bd", str(path)], capture_output=True, text=True
+        )
+        if proc.returncode != 0:
+            raise CorruptPayloadError(
+                f"{name or path.name}: 7z inválido: {proc.stdout.strip()[-200:]}"
+            )
+
+
 def write_stream_atomic(
     path: str | os.PathLike[str],
     register_callback: Callable[[Callable[[bytes], None]], None],
+    validate: Callable[[Path], None] | None = None,
 ) -> tuple[str, int]:
     """Stream data into a file atomically; return (sha256_hex, size_bytes).
 
@@ -202,6 +251,8 @@ def write_stream_atomic(
     Args:
         path: The destination path.
         register_callback: A function that takes a chunk-writer callback.
+        validate: Called with the complete temporary file before it replaces
+            ``path``; an exception leaves ``path`` untouched.
 
     Returns:
         tuple[str, int]: A tuple containing the SHA-256 digest and total bytes written.
@@ -231,6 +282,8 @@ def write_stream_atomic(
             register_callback(_write_chunk)
             stream.flush()
             os.fsync(stream.fileno())
+        if validate is not None:
+            validate(temp_path)
         temp_path.replace(target)
         return digest.hexdigest(), size
     except OSError as exc:

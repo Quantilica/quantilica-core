@@ -18,8 +18,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:  # evita ciclo pesado (http importa httpx2)
     from .http import ProgressCallback
 
-from .exceptions import FetchError
-from .files import ensure_parent, write_stream_atomic
+from .exceptions import CorruptPayloadError, FetchError
+from .files import check_payload, ensure_parent, write_stream_atomic
 from .logging import get_logger, log_step
 from .manifests import DownloadManifest, write_manifest_sidecar
 from .retry import exponential_delay, retry_call
@@ -32,6 +32,8 @@ FTP_TRANSIENT_ERRORS: tuple[type[BaseException], ...] = (
     ftplib.error_proto,
     EOFError,
     OSError,  # superclass of ConnectionResetError, BrokenPipeError, TimeoutError
+    # O PDET já entregou trechos trocados num 7z que, baixado de novo, veio íntegro.
+    CorruptPayloadError,
 )
 
 # IIS/Windows DOS-style LIST line, e.g.:
@@ -392,7 +394,11 @@ class FtpClient:
 
                             ftp.retrbinary(f"RETR {url}", _tracked)
 
-                        sha256, size_bytes = write_stream_atomic(target, _stream)
+                        sha256, size_bytes = write_stream_atomic(
+                            target,
+                            _stream,
+                            validate=lambda p: check_payload(p, target.name),
+                        )
                     except ftplib.error_perm as exc:
                         raise FetchError(f"FTP file not found: {url}") from exc
                     outcome.update(sha256=sha256, size_bytes=size_bytes)
