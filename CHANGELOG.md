@@ -5,6 +5,14 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [Unreleased]
+
+### Corrigido
+- `lake.file_key` reconhece a extensão `.dbc` (DBF comprimido do DATASUS) e tira dela a
+  data de publicação, como nas demais: `sih-rd_202001-sp@20200301.dbc` vira
+  `sih-rd_202001-sp`. Antes, cada republicação de um DBC ganhava uma chave nova, e a
+  versão anterior continuava no lake ao lado da nova.
+
 ## [0.14.0] - 2026-10-29
 
 ### Adicionado

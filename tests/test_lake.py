@@ -62,6 +62,7 @@ def test_lake_root_expands_user(monkeypatch):
     ("name", "expected"),
     [
         ("caged_202401.7z", "caged_202401"),
+        ("sih-rd_202001-sp@20200301.dbc", "sih-rd_202001-sp"),  # DBC do DATASUS
         ("investidores@20261021.csv", "investidores"),
         ("data.csv.gz", "data"),
         ("archive.tar.gz", "archive"),

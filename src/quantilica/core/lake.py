@@ -71,6 +71,7 @@ _RAW_SUFFIXES = frozenset(
         ".xls",
         ".xlsx",
         ".dbf",
+        ".dbc",
         ".parquet",
         ".tar",
         ".zip",
