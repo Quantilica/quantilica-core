@@ -5,7 +5,7 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
-## [Unreleased]
+## [0.14.1] - 2026-10-30
 
 ### Corrigido
 - `lake.file_key` reconhece a extensão `.dbc` (DBF comprimido do DATASUS) e tira dela a
