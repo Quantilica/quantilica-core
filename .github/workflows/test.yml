@@ -9,12 +9,16 @@ on:
 
 jobs:
   test:
-    name: Test (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         python-version: ["3.12", "3.13"]
+        include:
+          - os: windows-latest
+            python-version: "3.12"
 
     steps:
       - uses: actions/checkout@v4
@@ -31,6 +35,7 @@ jobs:
       # (2026-08-23: rtn e inmet). Três tentativas removem o flake sem
       # esconder erro real de resolução.
       - name: Install dependencies
+        shell: bash
         run: |
           for i in 1 2 3; do
             if uv sync --group dev --python ${{ matrix.python-version }} \

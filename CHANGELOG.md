@@ -5,6 +5,14 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [Não lançado]
+
+### Adicionado
+
+- `lake.select_current()`: escolhe a versão vigente de cada arquivo bruto. A chave é o diretório mais `file_key()`, e a versão é a data `@AAAAMMDD` ou `@AAAAMMDDTHHMMSS` do nome; o arquivo sem data é a versão mais antiga possível, e arquivos de formatos diferentes (gêmeos) da mesma versão ficam juntos. O manifesto (`.manifest.json`) acompanha o arquivo escolhido. `exclude` aceita `sha256` (lido do manifesto, e só calculado se não houver) e caminhos relativos, e é aplicado depois da escolha: excluir a versão mais nova não traz de volta uma anterior.
+- `lake.materialize_view()` e `lake.ViewSummary`: criam uma árvore com o mesmo layout do bruto, só com a versão vigente de cada arquivo e o manifesto dela, por `hardlink`, `symlink` ou `copy`. Quando o modo pedido falha (outro volume, Windows sem permissão para symlink), recua de hardlink para symlink e para cópia. Pode ser repetida sem duplicar nada e remove da visão o que deixou de ser vigente.
+- `lake.LakeConverter` (`typing.Protocol`, verificável com `isinstance`) formaliza o contrato do conversor registrado no entry point `quantilica.lake`, sem exigir mudança dos conversores existentes. Ganha o método opcional `inventory(input_dir)`, que devolve uma lista de `lake.Planned` (arquivo, dataset de destino e motivo de ignorar: `gemeo`, `nao_tabular` ou `superado`). `lake.converter_inventory()` chama o método e devolve `None` para o conversor que não o implementa.
+
 ## [0.14.1] - 2026-10-30
 
 ### Corrigido
