@@ -508,6 +508,11 @@ def test_rate_limiter_exported_from_package_root():
     assert "RateLimiter" in quantilica.core.__all__
 
 
+# time.monotonic() no Windows tem resolução de ~15 ms; os testes de tempo
+# toleram essa margem para não oscilar no CI windows-latest.
+_CLOCK_TOLERANCE = 0.02
+
+
 def test_http_client_rate_limits_sequential_requests():
     count = 0
 
@@ -528,8 +533,9 @@ def test_http_client_rate_limits_sequential_requests():
     elapsed = time.monotonic() - started
 
     assert count == 3
-    # Três requisições => dois intervalos mínimos entre slots.
-    assert elapsed >= 0.095
+    # Três requisições => dois intervalos mínimos entre slots. Tolerância de
+    # 20 ms: time.monotonic() no Windows tem resolução de ~15 ms.
+    assert elapsed >= 0.1 - _CLOCK_TOLERANCE
 
 
 def test_http_client_rate_limits_stream_requests():
@@ -553,8 +559,9 @@ def test_http_client_rate_limits_stream_requests():
 
     assert out == target
     assert out.read_bytes() == payload
-    # HEAD (freshness) + GET (stream) => pelo menos um intervalo.
-    assert elapsed >= 0.049
+    # HEAD (freshness) + GET (stream) => pelo menos um intervalo (com a mesma
+    # tolerância de resolução do relógio do Windows).
+    assert elapsed >= 0.05 - _CLOCK_TOLERANCE
 
 
 def test_resolve_verify_from_env_defaults_true(monkeypatch):
