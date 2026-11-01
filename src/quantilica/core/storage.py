@@ -537,3 +537,177 @@ class LocalStorage:
     def _key_from_path(self, path: Path) -> str:
         relative = path.resolve().relative_to(self.root)
         return relative.as_posix()
+
+
+ExpectedFormat = Literal[
+    "zip",
+    "xlsx",
+    "7z",
+    "gz",
+    "zst",
+    "parquet",
+    "pdf",
+    "dbc",
+    "dbf",
+    "csv",
+    "txt",
+    "json",
+    "ndjson",
+    "xml",
+    "html",
+]
+
+
+def validate_payload_signature(
+    source: Path | bytes | bytearray | memoryview,
+    expected_format: ExpectedFormat,
+    *,
+    min_bytes: int = 1,
+) -> None:
+    """Valida assinatura mágica, rejeita HTML/WAF em HTTP 200 e checa integridade."""
+    import io
+    import zipfile
+
+    from .exceptions import InvalidPayloadSignatureError
+
+    if isinstance(source, (str, Path)):
+        p = Path(source)
+        if not p.is_file():
+            raise FileNotFoundError(f"Arquivo não encontrado para validação: {p}")
+        size = p.stat().st_size
+        if size < min_bytes:
+            raise InvalidPayloadSignatureError(
+                f"Tamanho do arquivo ({size} B) inferior ao mínimo ({min_bytes} B)"
+            )
+        with open(p, "rb") as f:
+            header = f.read(512)
+        if expected_format == "parquet":
+            with open(p, "rb") as f:
+                if size >= 4:
+                    f.seek(-4, os.SEEK_END)
+                    footer = f.read(4)
+                else:
+                    footer = b""
+        else:
+            footer = b""
+    elif isinstance(source, (bytes, bytearray, memoryview)):
+        raw = bytes(source)
+        size = len(raw)
+        if size < min_bytes:
+            raise InvalidPayloadSignatureError(
+                f"Tamanho do payload ({size} B) inferior ao mínimo ({min_bytes} B)"
+            )
+        header = raw[:512]
+        footer = raw[-4:] if size >= 4 else b""
+    else:
+        raise TypeError(f"source deve ser Path ou bytes, obtido {type(source)}")
+
+    # 1. Anti-Soft-200 HTML e marcadores de WAF / Firewall
+    if expected_format != "html":
+        clean_header = header
+        if clean_header.startswith(b"\xef\xbb\xbf"):
+            clean_header = clean_header[3:]
+        clean_header = clean_header.lstrip()
+        ascii_text = clean_header.decode("ascii", errors="ignore").lower()
+
+        html_starts = ("<!doctype html", "<html", "<head", "<body", "<script")
+        if any(ascii_text.startswith(h) for h in html_starts):
+            preview = ascii_text[:120].strip()
+            raise InvalidPayloadSignatureError(
+                f"Esperado formato {expected_format!r}, "
+                f"mas recebida página HTML: {preview!r}"
+            )
+
+        waf_markers = (
+            "the requested url was rejected",
+            "access denied",
+            "attention required! | cloudflare",
+            "serviço em manutenção",
+            "servico em manutencao",
+            "sistema temporariamente indisponível",
+            "sistema temporariamente indisponivel",
+            "request rejected",
+        )
+        for marker in waf_markers:
+            if marker in ascii_text:
+                preview = ascii_text[:120].strip()
+                raise InvalidPayloadSignatureError(
+                    f"Esperado formato {expected_format!r}, "
+                    f"mas recebido bloqueio WAF: {preview!r}"
+                )
+
+    # 2. Magic bytes estritos por formato
+    if expected_format in ("zip", "xlsx"):
+        if not (header.startswith(b"PK\x03\x04") or header.startswith(b"PK\x05\x06")):
+            raise InvalidPayloadSignatureError(
+                f"Assinatura inválida {expected_format!r}: obtido {header[:4]!r}"
+            )
+        try:
+            if isinstance(source, (str, Path)):
+                is_valid = zipfile.is_zipfile(source)
+            else:
+                is_valid = zipfile.is_zipfile(io.BytesIO(bytes(source)))
+            if not is_valid:
+                raise InvalidPayloadSignatureError(
+                    f"Arquivo {expected_format!r} corrompido ou truncado: "
+                    "EOCD não encontrado"
+                )
+        except Exception as exc:
+            if isinstance(exc, InvalidPayloadSignatureError):
+                raise
+            raise InvalidPayloadSignatureError(
+                f"Arquivo {expected_format!r} corrompido ou truncado: {exc}"
+            ) from exc
+
+    elif expected_format == "7z":
+        if not header.startswith(b"7z\xbc\xaf\x27\x1c"):
+            raise InvalidPayloadSignatureError(
+                f"Assinatura inválida para '7z': obtido {header[:6]!r}"
+            )
+
+    elif expected_format == "gz":
+        if not header.startswith(b"\x1f\x8b"):
+            raise InvalidPayloadSignatureError(
+                f"Assinatura inválida para 'gz': obtido {header[:2]!r}"
+            )
+
+    elif expected_format == "zst":
+        if not header.startswith(b"\x28\xb5\x2f\xfd"):
+            raise InvalidPayloadSignatureError(
+                f"Assinatura inválida para 'zst': obtido {header[:4]!r}"
+            )
+
+    elif expected_format == "parquet":
+        if not header.startswith(b"PAR1"):
+            raise InvalidPayloadSignatureError(
+                f"Assinatura inválida no header Parquet: obtido {header[:4]!r}"
+            )
+        if footer != b"PAR1":
+            raise InvalidPayloadSignatureError(
+                f"Assinatura inválida no footer Parquet: obtido {footer!r}"
+            )
+
+    elif expected_format == "pdf":
+        if not header.startswith(b"%PDF-"):
+            raise InvalidPayloadSignatureError(
+                f"Assinatura inválida para PDF: obtido {header[:5]!r}"
+            )
+
+    elif expected_format in ("json", "ndjson"):
+        clean = header
+        if clean.startswith(b"\xef\xbb\xbf"):
+            clean = clean[3:]
+        clean = clean.lstrip()
+        first = clean[:1]
+        if first not in (b"{", b"["):
+            raise InvalidPayloadSignatureError(
+                f"Assinatura inválida para {expected_format!r}: obtido {first!r}"
+            )
+
+    elif expected_format == "dbc":
+        if size < 4:
+            raise InvalidPayloadSignatureError(f"Arquivo DBC muito curto: {size} bytes")
+
+    elif expected_format == "dbf":
+        if size < 32:
+            raise InvalidPayloadSignatureError(f"Arquivo DBF muito curto: {size} bytes")

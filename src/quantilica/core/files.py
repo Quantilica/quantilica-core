@@ -234,7 +234,20 @@ def check_payload(
         return
     with open(path, "rb") as fh:
         head = fh.read(512).lstrip(b"\xef\xbb\xbf \t\r\n").lower()
-    if head.startswith(_HTML_PREFIXES):
+    _waf_markers = (
+        b"the requested url was rejected",
+        b"access denied",
+        b"attention required! | cloudflare",
+        b"servi\xc3\xa7o em manuten\xc3\xa7\xc3\xa3o",
+        b"servico em manutencao",
+        b"sistema temporariamente indispon",
+        b"request rejected",
+    )
+    if (
+        head.startswith(_HTML_PREFIXES)
+        or head.startswith((b"<head", b"<body", b"<script"))
+        or any(m in head for m in _waf_markers)
+    ):
         raise CorruptPayloadError(f"{name or path.name}: página HTML no lugar do dado")
 
     if expect_header is not None:

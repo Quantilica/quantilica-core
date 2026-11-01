@@ -16,6 +16,7 @@ import datetime as dt
 import email.utils
 import json
 from dataclasses import dataclass, replace
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
@@ -30,6 +31,18 @@ if TYPE_CHECKING:  # evita custo/ciclo em tempo de importação
 
 SkipPolicy = Literal["freshness", "strict_manifest", "exists", "never"]
 """Skip policies accepted by :func:`should_skip`."""
+
+
+class FreshnessPolicy(StrEnum):
+    """Canonical freshness policies governing remote probes and synchronization."""
+
+    # F1: HEAD padrão com ETag / Last-Modified / Content-Length
+    HEAD_OR_MANIFEST = "head_or_manifest"
+    # F2: Fallback para GET Range: bytes=0-0 se HEAD retornar 403/405/sem headers
+    HEAD_FALLBACK_GET = "head_fallback_get"
+    # F3: Validação de conteúdo em stream com deduplicação CAS por sha256 local
+    REMOTE_ONLY = "remote_only"
+
 
 _FRESHNESS_BUFFER_S = 1.0
 """Tolerance (seconds) when comparing local mtime against remote timestamps."""
@@ -118,13 +131,20 @@ class HttpFreshnessProbe:
     ``ETag`` from the response headers.
     """
 
-    def __init__(self, client: HttpClient) -> None:
+    def __init__(
+        self,
+        client: HttpClient,
+        policy: FreshnessPolicy | str = FreshnessPolicy.HEAD_OR_MANIFEST,
+    ) -> None:
         """Initialize the probe.
 
         Args:
             client: The HTTP client used to fetch remote metadata.
+            policy: Freshness policy governing probes
+                (HEAD_OR_MANIFEST, HEAD_FALLBACK_GET).
         """
         self._client = client
+        self.policy = FreshnessPolicy(policy)
 
     def probe(self, url: str) -> RemoteStat | None:
         """Inspect ``url`` and return its remote stats.
@@ -137,15 +157,44 @@ class HttpFreshnessProbe:
             the request fails, redirects away, or the server reports nothing
             useful (e.g. ``Content-Length=0`` on HEAD).
         """
+        response = None
         try:
             response = self._client.head_or_get(url)
         except Exception:
-            return None
-        size = response.headers.get("Content-Length")
-        last_modified = response.headers.get("Last-Modified")
-        etag = response.headers.get("ETag")
+            if self.policy != FreshnessPolicy.HEAD_FALLBACK_GET:
+                return None
+
+        # Se retornou vazio ou falhou e a política for HEAD_FALLBACK_GET, tenta Range
+        size_hdr = response.headers.get("Content-Length") if response else None
+        last_modified = response.headers.get("Last-Modified") if response else None
+        etag = response.headers.get("ETag") if response else None
+
+        if (
+            (not size_hdr or size_hdr == "0")
+            and not last_modified
+            and not etag
+            and self.policy == FreshnessPolicy.HEAD_FALLBACK_GET
+        ):
+            try:
+                # Fallback com Range: bytes=0-0
+                with self._client.stream(
+                    "GET", url, headers={"Range": "bytes=0-0"}
+                ) as stream_resp:
+                    cr = stream_resp.headers.get("Content-Range", "")
+                    # Content-Range: bytes 0-0/123456
+                    if "/" in cr:
+                        total_s = cr.rsplit("/", 1)[-1].strip()
+                        if total_s.isdigit():
+                            size_hdr = total_s
+                    if not size_hdr:
+                        size_hdr = stream_resp.headers.get("Content-Length")
+                    last_modified = stream_resp.headers.get("Last-Modified")
+                    etag = stream_resp.headers.get("ETag")
+            except Exception:
+                pass
+
         stat = RemoteStat(
-            size=int(size) if size and size.isdigit() else None,
+            size=int(size_hdr) if size_hdr and size_hdr.isdigit() else None,
             last_modified=_parse_http_date(last_modified),
             etag=etag or None,
         )

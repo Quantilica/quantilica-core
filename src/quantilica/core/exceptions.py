@@ -21,6 +21,10 @@ class CorruptPayloadError(FetchError):
     """
 
 
+class InvalidPayloadSignatureError(CorruptPayloadError, ValueError):
+    """Payload baixado é um Soft-200 HTML, bloqueio WAF ou arquivo truncado."""
+
+
 class EmptyPayloadError(CorruptPayloadError):
     """Raised when a downloaded file contains only a header or no data."""
 

@@ -9,6 +9,7 @@ from .ckan import (
 )
 from .exceptions import (
     EmptyPayloadError,
+    InvalidPayloadSignatureError,
     TooManyRedirects,
 )
 from .files import decompress_archive
@@ -51,9 +52,12 @@ from .manifests import (
 )
 from .storage import (
     BaseDataRepository,
+    ExpectedFormat,
     format_partition_token,
+    validate_payload_signature,
 )
 from .sync import (
+    FreshnessPolicy,
     FreshnessProbe,
     FtpFreshnessProbe,
     HttpFreshnessProbe,
@@ -79,12 +83,15 @@ __all__ = [
     "DownloadManifest",
     "EmptyPayloadError",
     "ExecutionManifest",
+    "ExpectedFormat",
+    "FreshnessPolicy",
     "FreshnessProbe",
     "FtpFreshnessProbe",
     "HostPolicy",
     "HttpClient",
     "HttpFreshnessProbe",
     "IncrementalSyncStrategy",
+    "InvalidPayloadSignatureError",
     "LakeConverter",
     "Planned",
     "RateLimiter",
@@ -115,5 +122,6 @@ __all__ = [
     "remote_zip_members",
     "select_current",
     "should_skip",
+    "validate_payload_signature",
     "write_manifest_sidecar",
 ]
