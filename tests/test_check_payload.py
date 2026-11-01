@@ -82,3 +82,54 @@ def test_write_stream_atomic_nao_publica_payload_invalido(tmp_path: Path) -> Non
         )
     assert target.read_text() == "versão anterior"
     assert list(tmp_path.iterdir()) == [target]  # sem temporário sobrando
+
+
+def test_parquet_valido_e_invalido(tmp_path: Path) -> None:
+    # 1. Valid parquet (minimal dummy structure >= 12 bytes with PAR1 at start and end)
+    valid_parquet = tmp_path / "valid.parquet"
+    valid_parquet.write_bytes(b"PAR1" + b"\x00" * 4 + b"\x00\x00\x00\x00" + b"PAR1")
+    check_payload(valid_parquet)
+
+    # 2. Too small
+    too_small = tmp_path / "short.parquet"
+    too_small.write_bytes(b"PAR1")
+    with pytest.raises(CorruptPayloadError, match="< 12 bytes"):
+        check_payload(too_small)
+
+    # 3. Bad magic
+    bad_magic = tmp_path / "bad.parquet"
+    bad_magic.write_bytes(b"PAR1" + b"\x00" * 8 + b"XXXX")
+    with pytest.raises(CorruptPayloadError, match="PAR1 ausente"):
+        check_payload(bad_magic)
+
+
+def test_expect_header_validation(tmp_path: Path) -> None:
+    csv_file = tmp_path / "dataset.csv"
+    csv_file.write_text("id;nome;valor\n1;teste;100\n")
+
+    # Header matches
+    check_payload(csv_file, expect_header=lambda h: h.startswith(b"id;nome"))
+
+    # Header does not match
+    with pytest.raises(CorruptPayloadError, match="cabeçalho não confere"):
+        check_payload(
+            csv_file,
+            expect_header=lambda h: h.startswith(b"codigo;descricao"),
+        )
+
+
+def test_empty_and_header_only_payload(tmp_path: Path) -> None:
+    from quantilica.core.exceptions import EmptyPayloadError
+
+    empty_csv = tmp_path / "empty.csv"
+    empty_csv.write_text("")
+    with pytest.raises(EmptyPayloadError, match="vazio"):
+        check_payload(empty_csv)
+
+    header_only_csv = tmp_path / "header_only.csv"
+    header_only_csv.write_text("col1;col2;col3\n")
+    with pytest.raises(EmptyPayloadError, match="apenas cabeçalho"):
+        check_payload(header_only_csv)
+
+    # Allowed when allow_header_only=True
+    check_payload(header_only_csv, allow_header_only=True)

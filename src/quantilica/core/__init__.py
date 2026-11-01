@@ -2,13 +2,25 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
+from .ckan import (
+    CkanClient,
+    CkanError,
+    pick_resources,
+)
+from .exceptions import (
+    EmptyPayloadError,
+    TooManyRedirects,
+)
 from .files import decompress_archive
 from .ftp import parse_ftp_list_line
 from .http import (
     AsyncHttpClient,
+    HostPolicy,
     HttpClient,
     RateLimiter,
     RetryableHttpStatusError,
+    ZipMember,
+    remote_zip_members,
 )
 from .lake import (
     CANONICAL_PARTITION_TYPES,
@@ -60,12 +72,16 @@ __all__ = [
     "AsyncHttpClient",
     "BaseDataRepository",
     "CANONICAL_PARTITION_TYPES",
+    "CkanClient",
+    "CkanError",
     "DatasetDescriptor",
     "DatasetManifest",
     "DownloadManifest",
+    "EmptyPayloadError",
     "ExecutionManifest",
     "FreshnessProbe",
     "FtpFreshnessProbe",
+    "HostPolicy",
     "HttpClient",
     "HttpFreshnessProbe",
     "IncrementalSyncStrategy",
@@ -75,7 +91,9 @@ __all__ = [
     "RemoteStat",
     "RetryableHttpStatusError",
     "RunManifest",
+    "TooManyRedirects",
     "ViewSummary",
+    "ZipMember",
     "__version__",
     "composite_file_key",
     "converter_inventory",
@@ -92,7 +110,9 @@ __all__ = [
     "parse_partition_path",
     "partition_dir",
     "partition_types_for",
+    "pick_resources",
     "read_manifest_sidecar",
+    "remote_zip_members",
     "select_current",
     "should_skip",
     "write_manifest_sidecar",

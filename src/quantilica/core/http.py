@@ -11,17 +11,21 @@ import hashlib
 import logging
 import os
 import ssl
+import struct
 import tempfile
 import threading
 import time
 from collections.abc import AsyncGenerator, Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx2
 
-from .exceptions import FetchError, StorageError
+from .exceptions import FetchError, StorageError, TooManyRedirects
 from .files import (
+    DEFAULT_MIN_FREE_MARGIN,
     check_free_space,
     check_payload,
     ensure_parent,
@@ -84,8 +88,44 @@ class HttpStatusError(FetchError):
         self.status_code = status_code
 
 
+def _parse_retry_after(raw: str | None) -> float | None:
+    if not raw:
+        return None
+    raw = raw.strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        pass
+    try:
+        parsed_dt = email.utils.parsedate_to_datetime(raw)
+        now = dt.datetime.now(dt.UTC)
+        return max(0.0, (parsed_dt - now).total_seconds())
+    except Exception:
+        return None
+
+
 class RetryableHttpStatusError(HttpStatusError):
     """Raised for HTTP status codes that are safe to retry."""
+
+    def __init__(
+        self,
+        url: str,
+        status_code: int,
+        retry_after: float | None = None,
+    ) -> None:
+        super().__init__(url, status_code)
+        self.retry_after = retry_after
+
+
+@dataclass(frozen=True)
+class HostPolicy:
+    """Per-host rate limiting, concurrency, and reliability policy."""
+
+    min_interval: float = 1.0
+    max_concurrency: int = 4
+    deadline: float | None = None
+    max_redirects: int = 10
+    retry_on_tls_eof: bool = True
 
 
 DEFAULT_RETRY_EXCEPTIONS = (
@@ -96,6 +136,7 @@ DEFAULT_RETRY_EXCEPTIONS = (
     RetryableHttpStatusError,
     ConnectionError,
     TimeoutError,
+    ssl.SSLEOFError,
 )
 
 VerifyOption = bool | str | ssl.SSLContext
@@ -191,14 +232,18 @@ __all__ = [
     "DEFAULT_STREAM_CHUNK_SIZE",
     "DEFAULT_TIMEOUT",
     "DEFAULT_USER_AGENT",
+    "HostPolicy",
     "HttpClient",
     "HttpStatusError",
     "ProgressCallback",
     "RETRY_STATUS_CODES",
     "RateLimiter",
     "RetryableHttpStatusError",
+    "TooManyRedirects",
     "VerifyOption",
+    "ZipMember",
     "is_remote_more_recent",
+    "remote_zip_members",
     "resolve_verify_from_env",
 ]
 
@@ -222,6 +267,8 @@ class HttpClient:
         limits: httpx2.Limits | None = None,
         emulate_browser: bool = False,
         min_interval: float = 0.0,
+        host_policies: Mapping[str, HostPolicy] | None = None,
+        jitter: float = 0.5,
     ) -> None:
         if emulate_browser:
             default_headers: dict[str, str] = dict(BROWSER_HEADERS)
@@ -250,8 +297,35 @@ class HttpClient:
         self.cookies = cookies or httpx2.Cookies()
         self.limits = limits or DEFAULT_LIMITS
         self.emulate_browser = emulate_browser
+        self.host_policies = dict(host_policies or {})
+        self.jitter = float(jitter)
         self._rate_limiter = _RateLimiter(max(0.0, float(min_interval)))
+        self._host_rate_limiters: dict[str, RateLimiter] = {}
+        self._host_semaphores: dict[str, threading.BoundedSemaphore] = {}
+        self._lock = threading.Lock()
         self._client: httpx2.Client | None = None
+
+    def _extract_host(self, url: str) -> str:
+        try:
+            parts = urlsplit(url)
+            return (parts.hostname or parts.netloc.split(":")[0]).lower()
+        except Exception:
+            return ""
+
+    def _policy_for(self, url: str) -> HostPolicy | None:
+        host = self._extract_host(url)
+        return self.host_policies.get(host)
+
+    def _acquire_rate_limits(self, url: str) -> None:
+        self._rate_limiter.acquire()
+        policy = self._policy_for(url)
+        if policy is not None and policy.min_interval > 0:
+            host = self._extract_host(url)
+            with self._lock:
+                if host not in self._host_rate_limiters:
+                    self._host_rate_limiters[host] = RateLimiter(policy.min_interval)
+                limiter = self._host_rate_limiters[host]
+            limiter.acquire()
 
     @property
     def min_interval(self) -> float:
@@ -326,32 +400,59 @@ class HttpClient:
         """
 
         def do_request() -> httpx2.Response:
-            self._rate_limiter.acquire()
+            self._acquire_rate_limits(url)
+            policy = self._policy_for(url)
+            semaphore = None
+            if policy is not None and policy.max_concurrency > 0:
+                host = self._extract_host(url)
+                with self._lock:
+                    if host not in self._host_semaphores:
+                        self._host_semaphores[host] = threading.BoundedSemaphore(
+                            policy.max_concurrency
+                        )
+                    semaphore = self._host_semaphores[host]
+
             start = time.perf_counter()
+            start_mono = time.monotonic()
             client, is_persistent = self._get_client()
-            if is_persistent:
-                response = client.request(
-                    method,
-                    url,
-                    params=params,
-                    headers=headers,
-                    data=data,
-                    content=content,
-                    json=json,  # noqa: E501
-                )
-                self.cookies.update(response.cookies)
-            else:
-                with client as c:
-                    response = c.request(
+
+            def _send(c: httpx2.Client) -> httpx2.Response:
+                try:
+                    return c.request(
                         method,
                         url,
                         params=params,
                         headers=headers,
                         data=data,
                         content=content,
-                        json=json,  # noqa: E501
+                        json=json,
                     )
+                except httpx2.TooManyRedirects as exc:
+                    limit = policy.max_redirects if policy is not None else 20
+                    raise TooManyRedirects(
+                        f"Too many redirects for {url} (limit: {limit})"
+                    ) from exc
+
+            if semaphore is not None:
+                semaphore.acquire()
+            try:
+                if is_persistent:
+                    response = _send(client)
                     self.cookies.update(response.cookies)
+                else:
+                    with client as c:
+                        response = _send(c)
+                        self.cookies.update(response.cookies)
+            finally:
+                if semaphore is not None:
+                    semaphore.release()
+
+            if policy is not None and policy.deadline is not None:
+                if (time.monotonic() - start_mono) > policy.deadline:
+                    raise TimeoutError(
+                        f"Request deadline of {policy.deadline}s exceeded for {url}"
+                    )
+
             elapsed = time.perf_counter() - start
             self.logger.debug(
                 bind_context(
@@ -363,7 +464,10 @@ class HttpClient:
                 )
             )
             if response.status_code in RETRY_STATUS_CODES:
-                raise RetryableHttpStatusError(str(response.url), response.status_code)
+                retry_after = _parse_retry_after(response.headers.get("Retry-After"))
+                raise RetryableHttpStatusError(
+                    str(response.url), response.status_code, retry_after=retry_after
+                )
             try:
                 response.raise_for_status()
             except httpx2.HTTPStatusError as exc:
@@ -374,6 +478,7 @@ class HttpClient:
             do_request,
             attempts=self.attempts,
             base_delay=self.retry_base_delay,
+            jitter=self.jitter,
             retry_exceptions=DEFAULT_RETRY_EXCEPTIONS,
         )
 
@@ -714,6 +819,9 @@ class HttpClient:
         check_size: bool = True,
         progress: ProgressCallback | None = None,
         chunk_size: int = DEFAULT_STREAM_CHUNK_SIZE,
+        max_bytes: int | None = None,
+        expect_header: Callable[[bytes], bool] | None = None,
+        allow_header_only: bool = False,
     ) -> Path:
         """Stream a URL to disk with freshness check, atomic write, and manifest.
 
@@ -763,6 +871,9 @@ class HttpClient:
             check_size: Whether to check file size for freshness.
             progress: Optional progress callback.
             chunk_size: The chunk size for streaming.
+            max_bytes: Maximum allowed bytes to download before raising StorageError.
+            expect_header: Optional validator callable for first non-empty header line.
+            allow_header_only: Whether files containing only a header line are ok.
 
         Returns:
             Path: The path to the downloaded file.
@@ -771,6 +882,8 @@ class HttpClient:
             StorageError: If there is insufficient disk space or a stream error.
         """
         target = Path(target_path)
+        policy = self._policy_for(url)
+        start_monotonic = time.monotonic()
         with log_step(
             self.logger,
             "download-with-manifest",
@@ -835,13 +948,23 @@ class HttpClient:
                                 downloaded = 0
                                 restarted = True
                                 digest = hashlib.sha256()
-                            total = downloaded + int(
+                            expected_len = int(
                                 response.headers.get("Content-Length", 0) or 0
                             )
+                            total = downloaded + expected_len
+                            needed_bytes = (
+                                (total - downloaded)
+                                if expected_len > 0
+                                else (
+                                    max_bytes
+                                    if max_bytes is not None
+                                    else DEFAULT_MIN_FREE_MARGIN
+                                )
+                            )
                             if not check_free_space(
-                                target, required_bytes=total - downloaded
+                                target, required_bytes=needed_bytes
                             ):
-                                req_mb = (total - downloaded) / (1024 * 1024)
+                                req_mb = needed_bytes / (1024 * 1024)
                                 raise StorageError(
                                     f"Insufficient disk space to download "
                                     f"{target.name} to {target.parent} "
@@ -875,10 +998,37 @@ class HttpClient:
                                         stream.write(chunk)
                                         digest.update(chunk)
                                         downloaded += len(chunk)
+                                        if (
+                                            max_bytes is not None
+                                            and downloaded > max_bytes
+                                        ):
+                                            raise StorageError(
+                                                f"Download of {target.name} exceeded "
+                                                f"max_bytes limit ({max_bytes} bytes)"
+                                            )
+                                        if (
+                                            policy is not None
+                                            and policy.deadline is not None
+                                        ):
+                                            if (
+                                                time.monotonic() - start_monotonic
+                                            ) > policy.deadline:
+                                                msg = (
+                                                    f"Download deadline of "
+                                                    f"{policy.deadline}s exceeded "
+                                                    f"for {url}"
+                                                )
+                                                raise TimeoutError(msg)
                                         if progress is not None:
                                             progress(downloaded, total)
                                     stream.flush()
                                     os.fsync(stream.fileno())
+
+                                if expected_len > 0 and downloaded != total:
+                                    raise StorageError(
+                                        f"Incomplete download for {target.name}: "
+                                        f"received {downloaded} bytes, expected {total}"
+                                    )
                             except OSError as exc:
                                 raise StorageError(
                                     f"Could not stream download to {target}"
@@ -935,7 +1085,12 @@ class HttpClient:
                     ) from last_error
                 outcome["sha256"] = digest.hexdigest()
                 outcome["size_bytes"] = downloaded
-                check_payload(temp_path, target.name)
+                check_payload(
+                    temp_path,
+                    target.name,
+                    expect_header=expect_header,
+                    allow_header_only=allow_header_only,
+                )
                 temp_path.replace(target)
             finally:
                 if temp_path.exists():
@@ -984,13 +1139,21 @@ class HttpClient:
         Raises:
             HttpStatusError: If a non-retryable error status is received.
         """
-        self._rate_limiter.acquire()
+        self._acquire_rate_limits(url)
         if self._client is not None:
             # Sessão persistente — reusa o pool.
             with self._client.stream(
                 method, url, params=params, headers=headers, data=data
             ) as response:  # noqa: E501
                 self.cookies.update(response.cookies)
+                if response.status_code in RETRY_STATUS_CODES:
+                    raw_ra = response.headers.get("Retry-After")
+                    retry_after = _parse_retry_after(raw_ra)
+                    raise RetryableHttpStatusError(
+                        str(response.url),
+                        response.status_code,
+                        retry_after=retry_after,
+                    )
                 try:
                     response.raise_for_status()
                 except httpx2.HTTPStatusError as exc:
@@ -1012,12 +1175,137 @@ class HttpClient:
             ) as client:
                 with client.stream(method, url, params=params, data=data) as response:
                     self.cookies.update(response.cookies)
+                    if response.status_code in RETRY_STATUS_CODES:
+                        retry_after = _parse_retry_after(
+                            response.headers.get("Retry-After")
+                        )
+                        raise RetryableHttpStatusError(
+                            str(response.url),
+                            response.status_code,
+                            retry_after=retry_after,
+                        )
                     try:
                         response.raise_for_status()
                     except httpx2.HTTPStatusError as exc:
                         url_str = str(response.url)
                         raise HttpStatusError(url_str, response.status_code) from exc
                     yield response
+
+
+@dataclass(frozen=True)
+class ZipMember:
+    """Metadata of an individual member inside a remote or local ZIP file."""
+
+    name: str
+    size: int
+    compressed_size: int
+    crc: int
+    offset: int
+
+
+def remote_zip_members(
+    client: HttpClient,
+    url: str,
+    *,
+    chunk_tail_size: int = 65536,
+) -> list[ZipMember]:
+    """Inspect a remote ZIP file via Range requests and list its members.
+
+    Reads the End of Central Directory (EOCD) record from the tail of the
+    remote file, fetches the Central Directory record table (if not already
+    within the fetched tail), and returns a list of :class:`ZipMember` objects
+    without downloading the member bodies.
+    """
+    head = client.head_or_get(url)
+    raw_len = head.headers.get("Content-Length")
+    if not raw_len:
+        raise FetchError(
+            f"Server did not return Content-Length for {url}; cannot inspect tail"
+        )
+    total_size = int(raw_len)
+    if total_size < 22:
+        raise FetchError(
+            f"Remote file at {url} is too small to be a valid ZIP ({total_size} bytes)"
+        )
+
+    tail_size = min(total_size, max(chunk_tail_size, 22))
+    tail_start = total_size - tail_size
+    tail_bytes = client.get_bytes(
+        url, headers={"Range": f"bytes={tail_start}-{total_size - 1}"}
+    )
+
+    eocd_pos = tail_bytes.rfind(b"PK\x05\x06")
+    if eocd_pos == -1:
+        raise FetchError(f"End of Central Directory (EOCD) not found in {url}")
+
+    if len(tail_bytes) - eocd_pos < 22:
+        raise FetchError(f"Corrupt EOCD record in {url}")
+
+    (
+        _magic,
+        _disk_no,
+        _cd_disk,
+        _num_entries_disk,
+        _total_entries,
+        cd_size,
+        cd_offset,
+        _comment_len,
+    ) = struct.unpack("<4sHHHHIIH", tail_bytes[eocd_pos : eocd_pos + 22])
+
+    buffer_offset = cd_offset - tail_start
+    if buffer_offset >= 0 and buffer_offset + cd_size <= len(tail_bytes):
+        cd_data = tail_bytes[buffer_offset : buffer_offset + cd_size]
+    else:
+        cd_end = cd_offset + cd_size - 1
+        cd_data = client.get_bytes(
+            url, headers={"Range": f"bytes={cd_offset}-{cd_end}"}
+        )
+
+    members: list[ZipMember] = []
+    pos = 0
+    cd_len = len(cd_data)
+    while pos + 46 <= cd_len:
+        if cd_data[pos : pos + 4] != b"PK\x01\x02":
+            break
+        header = cd_data[pos : pos + 46]
+        (
+            _sig,
+            _ver_made,
+            _ver_need,
+            flag,
+            _method,
+            _time,
+            _date,
+            crc,
+            comp_size,
+            uncomp_size,
+            name_len,
+            extra_len,
+            comment_len,
+            _disk_start,
+            _int_attr,
+            _ext_attr,
+            local_offset,
+        ) = struct.unpack("<4sHHHHHHIIIHHHHHII", header)
+        name_bytes = cd_data[pos + 46 : pos + 46 + name_len]
+        encoding = "utf-8" if (flag & 0x800) else "cp437"
+        try:
+            member_name = name_bytes.decode(encoding)
+        except UnicodeDecodeError:
+            member_name = name_bytes.decode("latin-1", errors="replace")
+
+        members.append(
+            ZipMember(
+                name=member_name,
+                size=uncomp_size,
+                compressed_size=comp_size,
+                crc=crc,
+                offset=local_offset,
+            )
+        )
+        pos += 46 + name_len + extra_len + comment_len
+
+    return members
 
 
 class AsyncHttpClient:
@@ -1038,6 +1326,8 @@ class AsyncHttpClient:
         cookies: httpx2.Cookies | None = None,
         limits: httpx2.Limits | None = None,
         emulate_browser: bool = False,
+        min_interval: float = 0.0,
+        host_policies: Mapping[str, HostPolicy] | None = None,
     ) -> None:
         if emulate_browser:
             default_headers: dict[str, str] = dict(BROWSER_HEADERS)
@@ -1064,7 +1354,18 @@ class AsyncHttpClient:
         self.cookies = cookies or httpx2.Cookies()
         self.limits = limits or DEFAULT_LIMITS
         self.emulate_browser = emulate_browser
+        self.host_policies = dict(host_policies or {})
+        self._min_interval = max(0.0, float(min_interval))
         self._async_client: httpx2.AsyncClient | None = None
+
+    @property
+    def min_interval(self) -> float:
+        """Minimum spacing in seconds between consecutive requests."""
+        return self._min_interval
+
+    @min_interval.setter
+    def min_interval(self, value: float) -> None:
+        self._min_interval = max(0.0, float(value))
 
     def _build_async_client(self) -> httpx2.AsyncClient:
         return httpx2.AsyncClient(

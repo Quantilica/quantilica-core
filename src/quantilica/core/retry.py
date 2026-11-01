@@ -97,14 +97,17 @@ def retry_call[T](
             last_error = exc
             if attempt == attempts:
                 break
-            sleep(
-                exponential_delay(
+            retry_after = getattr(exc, "retry_after", None)
+            if retry_after is not None and retry_after > 0:
+                delay = float(retry_after)
+            else:
+                delay = exponential_delay(
                     attempt,
                     base_delay=base_delay,
                     max_delay=max_delay,
                     jitter=jitter,
                 )
-            )
+            sleep(delay)
 
     message = f"Operation failed after {attempts} attempt(s)"
     raise RetryError(message, attempts=attempts) from last_error
@@ -149,14 +152,17 @@ async def async_retry_call[T](
             last_error = exc
             if attempt == attempts:
                 break
-            await sleep(
-                exponential_delay(
+            retry_after = getattr(exc, "retry_after", None)
+            if retry_after is not None and retry_after > 0:
+                delay = float(retry_after)
+            else:
+                delay = exponential_delay(
                     attempt,
                     base_delay=base_delay,
                     max_delay=max_delay,
                     jitter=jitter,
                 )
-            )
+            await sleep(delay)
 
     message = f"Async operation failed after {attempts} attempt(s)"
     raise RetryError(message, attempts=attempts) from last_error

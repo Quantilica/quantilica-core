@@ -13,7 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO
 
-from .exceptions import CorruptPayloadError, StorageError
+from .exceptions import CorruptPayloadError, EmptyPayloadError, StorageError
 
 DEFAULT_CHUNK_SIZE = 1024 * 1024
 DEFAULT_MIN_FREE_MARGIN = 100 * 1024 * 1024  # 100 MB
@@ -189,21 +189,44 @@ def write_text_atomic(
 
 
 _DATA_SUFFIXES = frozenset(
-    {".csv", ".txt", ".zip", ".7z", ".xls", ".xlsx", ".json", ".dbc", ".dbf"}
+    {
+        ".csv",
+        ".txt",
+        ".zip",
+        ".7z",
+        ".xls",
+        ".xlsx",
+        ".json",
+        ".dbc",
+        ".dbf",
+        ".parquet",
+    }
 )
 _HTML_PREFIXES = (b"<!doctype html", b"<html")
 
 
-def check_payload(path: str | os.PathLike[str], name: str | None = None) -> None:
+def check_payload(
+    path: str | os.PathLike[str],
+    name: str | None = None,
+    *,
+    expect_header: Callable[[bytes], bool] | None = None,
+    allow_header_only: bool = False,
+) -> None:
     """Reject a downloaded file whose content contradicts its name.
 
     ``name`` is the final file name (``path`` may be a temporary file). A data
     file (``.csv``, ``.zip``...) that starts with an HTML document is a portal's
     error page; a ``.zip``/``.xlsx`` must pass ``testzip``; a ``.7z`` must pass
-    ``7z t`` (skipped when no 7z binary is installed).
+    ``7z t`` (skipped when no 7z binary is installed); a ``.parquet`` must have
+    at least 12 bytes and begin/end with ``PAR1``.
+
+    If ``expect_header`` is provided, it receives the first non-empty line of the file.
+    If ``allow_header_only`` is False, a text/CSV file containing only a header or empty
+    raises ``EmptyPayloadError``.
 
     Raises:
         CorruptPayloadError: If the content is not valid for the extension.
+        EmptyPayloadError: If the file is empty or only contains a header.
     """
     path = Path(path)
     suffix = Path(name or path.name).suffix.lower()
@@ -213,6 +236,35 @@ def check_payload(path: str | os.PathLike[str], name: str | None = None) -> None
         head = fh.read(512).lstrip(b"\xef\xbb\xbf \t\r\n").lower()
     if head.startswith(_HTML_PREFIXES):
         raise CorruptPayloadError(f"{name or path.name}: página HTML no lugar do dado")
+
+    if expect_header is not None:
+        with open(path, "rb") as fh:
+            first_line = b""
+            for line in fh:
+                stripped = line.lstrip(b"\xef\xbb\xbf").strip()
+                if stripped:
+                    first_line = stripped
+                    break
+        if not expect_header(first_line):
+            raise CorruptPayloadError(
+                f"{name or path.name}: cabeçalho não confere com o esperado"
+            )
+
+    if suffix in (".csv", ".txt"):
+        with open(path, "rb") as fh:
+            lines = 0
+            for line in fh:
+                if line.strip():
+                    lines += 1
+                    if lines > 1:
+                        break
+        if lines == 0:
+            raise EmptyPayloadError(f"{name or path.name}: arquivo vazio")
+        if lines == 1 and not allow_header_only:
+            raise EmptyPayloadError(
+                f"{name or path.name}: arquivo contendo apenas cabeçalho"
+            )
+
     if suffix in (".zip", ".xlsx"):
         try:
             with zipfile.ZipFile(path) as archive:
@@ -233,6 +285,20 @@ def check_payload(path: str | os.PathLike[str], name: str | None = None) -> None
         if proc.returncode != 0:
             raise CorruptPayloadError(
                 f"{name or path.name}: 7z inválido: {proc.stdout.strip()[-200:]}"
+            )
+    elif suffix == ".parquet":
+        size = path.stat().st_size
+        if size < 12:
+            raise CorruptPayloadError(
+                f"{name or path.name}: Parquet inválido: tamanho {size} < 12 bytes"
+            )
+        with open(path, "rb") as fh:
+            magic_head = fh.read(4)
+            fh.seek(-4, os.SEEK_END)
+            magic_tail = fh.read(4)
+        if magic_head != b"PAR1" or magic_tail != b"PAR1":
+            raise CorruptPayloadError(
+                f"{name or path.name}: Parquet inválido: assinatura PAR1 ausente"
             )
 
 

@@ -104,6 +104,8 @@ class DownloadManifest:
     lineage: Lineage | None = None
     quality: QualitySignals | None = None
     execution: ExecutionInfo | None = None
+    content_sha256: str | None = None
+    normalizer: str | None = None
 
     @classmethod
     def from_content(
@@ -274,6 +276,7 @@ class DownloadManifest:
         return cls(
             source_id=str(payload.get("source_id") or ""),
             dataset_id=str(payload.get("dataset_id") or ""),
+            resource_id=payload.get("resource_id"),
             url=str(payload.get("url") or ""),
             fetched_at=str(payload.get("fetched_at") or ""),
             sha256=str(payload.get("sha256") or ""),
@@ -283,6 +286,8 @@ class DownloadManifest:
             producer_version=payload.get("producer_version"),
             metadata=dict(payload.get("metadata") or {}),
             source_meta=source_meta,
+            content_sha256=payload.get("content_sha256"),
+            normalizer=payload.get("normalizer"),
         )
 
     def to_dict(self) -> dict[str, Any]:

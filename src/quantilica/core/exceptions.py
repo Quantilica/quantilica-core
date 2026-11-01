@@ -21,6 +21,18 @@ class CorruptPayloadError(FetchError):
     """
 
 
+class EmptyPayloadError(CorruptPayloadError):
+    """Raised when a downloaded file contains only a header or no data."""
+
+
+class TooManyRedirects(FetchError):
+    """Raised when an HTTP request exceeds the maximum allowed redirects."""
+
+
+class CkanError(FetchError):
+    """Raised when a CKAN API request fails or returns an error."""
+
+
 class ParseError(QuantilicaError):
     """Raised when input data cannot be parsed."""
 
