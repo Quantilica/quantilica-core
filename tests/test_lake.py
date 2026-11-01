@@ -410,6 +410,54 @@ def test_load_lake_converter_real_discovery_without_match():
     assert load_lake_converter("no-such-source-xyz") is None
 
 
+def test_composite_file_key():
+    from quantilica.core.lake import composite_file_key
+
+    # Without member
+    assert composite_file_key("caged_202401.7z") == "caged_202401"
+    assert composite_file_key("investidores@20261021.csv") == "investidores"
+    assert composite_file_key("investidores@20261021.csv", None) == "investidores"
+    assert composite_file_key("investidores@20261021.csv", "") == "investidores"
+
+    # With member / sheet
+    assert (
+        composite_file_key("anuario_2024@20250501.xlsx", "Tabela 1.1")
+        == "anuario_2024__tabela_1_1"
+    )
+    assert (
+        composite_file_key(
+            "anuario_2024@20250501.xlsx", "Aba com Acentuação & Espaços!"
+        )
+        == "anuario_2024__aba_com_acentuacao_espacos"
+    )
+    assert (
+        composite_file_key("ca-combustiveis_2024-S1@20240810.csv", "planilha")
+        == "ca-combustiveis_2024-S1__planilha"
+    )
+    assert (
+        composite_file_key("enem_2023@20240101.zip", "MICRODADOS_ENEM_2023.csv")
+        == "enem_2023__microdados_enem_2023"
+    )
+
+
+def test_partition_types():
+    from quantilica.core.lake import CANONICAL_PARTITION_TYPES, partition_types_for
+
+    assert CANONICAL_PARTITION_TYPES["ano"] == "int"
+    assert CANONICAL_PARTITION_TYPES["mes"] == "varchar"
+    assert CANONICAL_PARTITION_TYPES["semestre"] == "varchar"
+    assert CANONICAL_PARTITION_TYPES["trimestre"] == "varchar"
+    assert CANONICAL_PARTITION_TYPES["uf"] == "varchar"
+
+    mapping = partition_types_for(["ano", "mes", "uf", "custom_key"])
+    assert mapping == {
+        "ano": "int",
+        "mes": "varchar",
+        "uf": "varchar",
+        "custom_key": "varchar",
+    }
+
+
 # --- package exports ---------------------------------------------------------
 
 
@@ -419,12 +467,18 @@ def test_public_exports():
     for name in (
         "lake_root",
         "file_key",
+        "composite_file_key",
+        "CANONICAL_PARTITION_TYPES",
+        "partition_types_for",
         "DatasetDescriptor",
         "encode_partition_value",
         "partition_dir",
         "parse_partition_path",
         "dataset_lock",
         "load_lake_converter",
+        "BaseDataRepository",
+        "format_partition_token",
     ):
         assert name in core.__all__
-        assert getattr(core, name) is getattr(lake, name)
+        if hasattr(lake, name):
+            assert getattr(core, name) is getattr(lake, name)

@@ -177,3 +177,71 @@ def test_stamped_repo_ignores_manifest_sidecars(tmp_path):
 
     all_latest = repo.get_all_latest_stamped_files("data", ext="json")
     assert [f.name for f in all_latest] == ["series_1@20250601T000000.json"]
+
+
+def test_format_partition_token():
+    from quantilica.core.storage import format_partition_token
+
+    assert format_partition_token({}) is None
+    assert format_partition_token({"partition": "custom-part"}) == "custom-part"
+    assert format_partition_token({"year": 2024}) == "2024"
+    assert format_partition_token({"year": "2025"}) == "2025"
+    assert format_partition_token({"year": 2024, "semester": 1}) == "2024-S1"
+    assert format_partition_token({"year": 2024, "semester": "S2"}) == "2024-S2"
+    assert format_partition_token({"year": 2024, "quarter": 3}) == "2024-T3"
+    assert format_partition_token({"year": 2024, "quarter": "T4"}) == "2024-T4"
+    assert format_partition_token({"year": 2024, "month": 5}) == "2024-05"
+    assert format_partition_token({"year": 2024, "month": "08"}) == "2024-08"
+    assert format_partition_token({"year": 2024, "month": 5, "day": 9}) == "2024-05-09"
+    assert format_partition_token({"year": 2024, "uf": "SP"}) == "2024-sp"
+    assert format_partition_token({"year": 2024, "region": "SUL"}) == "2024-sul"
+    assert (
+        format_partition_token({"year": 2024, "month": 8, "uf": "SP"}) == "2024-08-sp"
+    )
+    assert format_partition_token({"ano": 2024}) == "2024"
+    assert format_partition_token({"ano": 2024, "mes": 5}) == "2024-05"
+    assert format_partition_token({"ano": 2024, "semestre": 2}) == "2024-S2"
+    assert format_partition_token({"ano": 2024, "trimestre": 1}) == "2024-T1"
+    assert format_partition_token({"ano": 2024, "mes": 5, "dia": 10}) == "2024-05-10"
+    assert format_partition_token({"uf": "RJ"}) == "rj"
+    assert format_partition_token({"region": "Nordeste"}) == "nordeste"
+
+
+def test_base_data_repository_path_for_entry(tmp_path):
+    from datetime import date, datetime
+
+    from quantilica.core.storage import BaseDataRepository
+
+    repo = BaseDataRepository(tmp_path)
+
+    # 1. Standard annual partition
+    entry = {"group": "exp", "id": "exp_mun", "year": 2023, "ext": "csv"}
+    p = repo.path_for_entry(entry, last_modified=date(2024, 3, 15))
+    assert p == tmp_path / "exp" / "exp_mun_2023@20240315.csv"
+
+    # 2. Semester partition
+    entry_sem = {"group": "anp", "id": "ca", "year": 2024, "semester": 1, "ext": "csv"}
+    p_sem = repo.path_for_entry(entry_sem, last_modified=date(2024, 8, 1))
+    assert p_sem == tmp_path / "anp" / "ca_2024-S1@20240801.csv"
+
+    # 3. Subdir by year
+    entry_sub = {"group": "pdet", "id": "caged", "year": 2024, "month": 1, "ext": "7z"}
+    p_sub = repo.path_for_entry(
+        entry_sub, subdir_by_year=True, last_modified=date(2024, 2, 1)
+    )
+    assert p_sub == tmp_path / "pdet" / "2024" / "caged_2024-01@20240201.7z"
+
+    # 4. Ext from URL
+    entry_url = {
+        "group": "cvm",
+        "id": "cias",
+        "url": "https://gov.br/data/file.zip?token=123",
+    }
+    p_url = repo.path_for_entry(entry_url)
+    assert p_url == tmp_path / "cvm" / "cias.zip"
+
+    # 5. Datetime precision
+    entry_dt = {"group": "td", "id": "taxas", "ext": "csv"}
+    dt_val = datetime(2024, 5, 1, 14, 30, 0)
+    p_dt = repo.path_for_entry(entry_dt, last_modified=dt_val, precision="datetime")
+    assert p_dt == tmp_path / "td" / "taxas@20240501T143000.csv"

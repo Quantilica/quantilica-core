@@ -24,6 +24,7 @@ import os
 import re
 import shutil
 import time
+import unicodedata
 from collections.abc import Collection, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields
@@ -55,6 +56,26 @@ LAYOUT_VERSION = 1
 HIVE_DEFAULT_PARTITION = "__HIVE_DEFAULT_PARTITION__"
 
 PARTITION_SOURCES = ("file", "rows")
+
+CANONICAL_PARTITION_TYPES: dict[str, str] = {
+    "ano": "int",
+    "mes": "varchar",
+    "trimestre": "varchar",
+    "semestre": "varchar",
+    "uf": "varchar",
+    "regiao": "varchar",
+    "periodo": "varchar",
+}
+
+
+def partition_types_for(keys: Iterable[str]) -> dict[str, str]:
+    """Return canonical partition types for the given keys.
+
+    Falls back to ``"varchar"`` for keys not present in
+    ``CANONICAL_PARTITION_TYPES``.
+    """
+    return {k: CANONICAL_PARTITION_TYPES.get(k, "varchar") for k in keys}
+
 
 _PARTITION_VALUE = re.compile(r"^[0-9A-Za-z._-]+$")
 _PARTITION_KEY = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -141,6 +162,35 @@ def _strip_raw_suffixes(name: str) -> str:
         else:
             break
     return name
+
+
+def composite_file_key(path_or_name: str | PurePath, member: str | None = None) -> str:
+    """Return the raw file's composite key including an optional member/sheet name.
+
+    Extracts ``base = file_key(path_or_name)`` (which strips extensions and
+    the ``@timestamp`` suffix). If ``member`` is given, normalizes it to
+    snake_case ASCII and returns ``f"{base}__{member_slug}"``.
+
+    Examples:
+        ``composite_file_key("anuario_2024@20250501.xlsx", "Tabela 1.1")``
+        -> ``"anuario_2024__tabela_1_1"``
+        ``composite_file_key("caged_202401.7z")``
+        -> ``"caged_202401"``
+    """
+    base = file_key(path_or_name)
+    if not member or not str(member).strip():
+        return base
+    member_clean = _strip_raw_suffixes(str(member).strip())
+    ascii_norm = (
+        unicodedata.normalize("NFKD", member_clean)
+        .encode("ascii", "ignore")
+        .decode("ascii")
+        .lower()
+    )
+    member_slug = re.sub(r"[^0-9a-z]+", "_", ascii_norm).strip("_")
+    if not member_slug:
+        return base
+    return f"{base}__{member_slug}"
 
 
 def encode_partition_value(value: str | int | float | None) -> str:

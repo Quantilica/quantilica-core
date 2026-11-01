@@ -11,10 +11,12 @@ from .http import (
     RetryableHttpStatusError,
 )
 from .lake import (
+    CANONICAL_PARTITION_TYPES,
     DatasetDescriptor,
     LakeConverter,
     Planned,
     ViewSummary,
+    composite_file_key,
     converter_inventory,
     dataset_lock,
     encode_partition_value,
@@ -24,6 +26,7 @@ from .lake import (
     materialize_view,
     parse_partition_path,
     partition_dir,
+    partition_types_for,
     select_current,
 )
 from .manifests import (
@@ -33,6 +36,10 @@ from .manifests import (
     RunManifest,
     read_manifest_sidecar,
     write_manifest_sidecar,
+)
+from .storage import (
+    BaseDataRepository,
+    format_partition_token,
 )
 from .sync import (
     FreshnessProbe,
@@ -51,6 +58,8 @@ except PackageNotFoundError:
 
 __all__ = [
     "AsyncHttpClient",
+    "BaseDataRepository",
+    "CANONICAL_PARTITION_TYPES",
     "DatasetDescriptor",
     "DatasetManifest",
     "DownloadManifest",
@@ -68,11 +77,13 @@ __all__ = [
     "RunManifest",
     "ViewSummary",
     "__version__",
+    "composite_file_key",
     "converter_inventory",
     "dataset_lock",
     "decompress_archive",
     "encode_partition_value",
     "file_key",
+    "format_partition_token",
     "is_manifest_valid",
     "lake_root",
     "load_lake_converter",
@@ -80,6 +91,7 @@ __all__ = [
     "parse_ftp_list_line",
     "parse_partition_path",
     "partition_dir",
+    "partition_types_for",
     "read_manifest_sidecar",
     "select_current",
     "should_skip",

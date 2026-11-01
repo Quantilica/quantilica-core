@@ -5,10 +5,11 @@ from __future__ import annotations
 import os
 import re
 import unicodedata
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Any, Literal
 
 from .dates import isoformat_utc
 from .exceptions import StorageError
@@ -85,6 +86,92 @@ def slugify(value: str) -> str:
     return re.sub(r"[-\s]+", "-", value)
 
 
+def format_partition_token(entry: Mapping[str, Any]) -> str | None:
+    """Return the canonical partition token string for an entry, or None.
+
+    Grammar (ISO 8601):
+    - Explicit partition: ``str(entry["partition"])``
+    - year + semester: ``f"{int(year)}-S{int(semester)}"``
+    - year + quarter: ``f"{int(year)}-T{int(quarter)}"``
+    - year + month + day: ``f"{int(year)}-{int(month):02d}-{int(day):02d}"``
+    - year + month: ``f"{int(year)}-{int(month):02d}"``
+    - year: ``f"{int(year)}"``
+    - geographic sub-partition: if ``uf`` or ``region`` is present:
+        if temporal token above: ``f"{temporal}-{uf_or_region.lower()}"``
+        if no temporal token: ``f"{uf_or_region.lower()}"``
+    """
+    if entry.get("partition") is not None and str(entry["partition"]).strip():
+        return str(entry["partition"]).strip()
+
+    year = entry.get("year") if entry.get("year") is not None else entry.get("ano")
+    semester = (
+        entry.get("semester")
+        if entry.get("semester") is not None
+        else entry.get("semestre")
+    )
+    quarter = (
+        entry.get("quarter")
+        if entry.get("quarter") is not None
+        else entry.get("trimestre")
+    )
+    month = entry.get("month") if entry.get("month") is not None else entry.get("mes")
+    day = entry.get("day") if entry.get("day") is not None else entry.get("dia")
+
+    temporal: str | None = None
+    if year is not None and str(year).strip():
+        try:
+            y = int(year)
+        except (ValueError, TypeError):
+            y = str(year).strip()
+
+        if semester is not None and str(semester).strip():
+            s_str = str(semester).strip().lstrip("S")
+            try:
+                s_val = int(s_str)
+            except ValueError:
+                s_val = s_str
+            temporal = f"{y}-S{s_val}"
+        elif quarter is not None and str(quarter).strip():
+            q_str = str(quarter).strip().lstrip("T")
+            try:
+                q_val = int(q_str)
+            except ValueError:
+                q_val = q_str
+            temporal = f"{y}-T{q_val}"
+        elif (
+            month is not None
+            and str(month).strip()
+            and day is not None
+            and str(day).strip()
+        ):
+            try:
+                m_val = f"{int(month):02d}"
+            except ValueError:
+                m_val = str(month).strip()
+            try:
+                d_val = f"{int(day):02d}"
+            except ValueError:
+                d_val = str(day).strip()
+            temporal = f"{y}-{m_val}-{d_val}"
+        elif month is not None and str(month).strip():
+            try:
+                m_val = f"{int(month):02d}"
+            except ValueError:
+                m_val = str(month).strip()
+            temporal = f"{y}-{m_val}"
+        else:
+            temporal = f"{y}"
+
+    geo = entry.get("uf") or entry.get("region")
+    if geo is not None and str(geo).strip():
+        geo_str = str(geo).strip().lower()
+        if temporal is not None:
+            return f"{temporal}-{geo_str}"
+        return geo_str
+
+    return temporal
+
+
 class BaseDataRepository:
     """Base class for data client repositories.
 
@@ -121,6 +208,51 @@ class BaseDataRepository:
         if not root.exists():
             return []
         return sorted(entry.name for entry in root.iterdir() if entry.is_dir())
+
+    def path_for_entry(
+        self,
+        entry: Mapping[str, Any],
+        *,
+        last_modified: date | datetime | None = None,
+        precision: Literal["date", "datetime"] = "date",
+        subdir_by_year: bool = False,
+    ) -> Path:
+        """Compute the destination path for a dataset entry.
+
+        Args:
+            entry: Mapping containing metadata (group, id, ext, year, etc.).
+            last_modified: The last modified timestamp to stamp, or None.
+            precision: The timestamp precision ("date" or "datetime").
+            subdir_by_year: If True and year is present, place under
+                ``{dataset_id}/{year}/``.
+
+        Returns:
+            Path: The computed local path under the storage root.
+        """
+        dataset_id = str(
+            entry.get("group") or entry.get("dataset") or entry.get("id") or "datasets"
+        )
+        slug = str(entry.get("id") or entry.get("slug") or dataset_id)
+
+        ext = entry.get("ext")
+        if not ext:
+            tail = str(entry.get("url", "")).split("?")[0].rsplit("/", 1)[-1]
+            ext = tail.rsplit(".", 1)[-1] if "." in tail else "bin"
+        ext = ext.lstrip(".")
+
+        partition = format_partition_token(entry)
+        filename = build_stamped_filename(
+            slug,
+            partition,
+            ext=ext,
+            timestamp=last_modified,
+            precision=precision,
+        )
+
+        year = entry.get("year") if entry.get("year") is not None else entry.get("ano")
+        if subdir_by_year and year is not None and str(year).strip():
+            return self.dataset_path(dataset_id, str(year).strip(), filename)
+        return self.dataset_path(dataset_id, filename)
 
 
 class StampedDataRepository(BaseDataRepository):
