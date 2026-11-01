@@ -10,7 +10,7 @@ import httpx2
 import pytest
 
 import quantilica.core.http as http_mod
-from quantilica.core.exceptions import FetchError
+from quantilica.core.exceptions import FetchError, InvalidPayloadSignatureError
 from quantilica.core.http import (
     BROWSER_HEADERS,
     AsyncHttpClient,
@@ -136,6 +136,48 @@ def test_download_with_manifest_streams_and_writes_manifest(tmp_path):
     assert manifest["sha256"] == hashlib.sha256(payload).hexdigest()
     assert manifest["size_bytes"] == len(payload)
     assert manifest["source_id"] == "src"
+
+
+def test_download_with_manifest_validates_payload_signature(tmp_path):
+    # A `.bin` target skips ``check_payload`` (extension not in _DATA_SUFFIXES),
+    # so this isolates the new ``expected_format`` validation path.
+    payload = b"\x1f\x8b\x08\x00" + b"x" * 100  # valid gzip magic bytes
+    handler = _download_handler_factory(payload)
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
+
+    target = tmp_path / "data.bin"
+    out = client.download_with_manifest(
+        "https://example.test/data",
+        target,
+        source_id="src",
+        dataset_id="ds",
+        producer="test",
+        expected_format="gz",
+    )
+
+    assert out == target
+    assert target.read_bytes() == payload
+
+
+def test_download_with_manifest_rejects_bad_signature(tmp_path):
+    payload = b"NOT A GZIP FILE AT ALL"
+    handler = _download_handler_factory(payload)
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
+
+    target = tmp_path / "data.bin"
+    with pytest.raises(InvalidPayloadSignatureError):
+        client.download_with_manifest(
+            "https://example.test/data",
+            target,
+            source_id="src",
+            dataset_id="ds",
+            producer="test",
+            expected_format="gz",
+        )
+
+    # Nada foi commitado e nenhum sidecar foi gravado.
+    assert not target.exists()
+    assert not target.with_suffix(".bin.manifest.json").exists()
 
 
 def test_download_with_manifest_invokes_progress(tmp_path):

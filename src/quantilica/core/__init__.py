@@ -53,6 +53,7 @@ from .manifests import (
 from .storage import (
     BaseDataRepository,
     ExpectedFormat,
+    expected_format_for_path,
     format_partition_token,
     validate_payload_signature,
 )
@@ -107,6 +108,7 @@ __all__ = [
     "dataset_lock",
     "decompress_archive",
     "encode_partition_value",
+    "expected_format_for_path",
     "file_key",
     "format_partition_token",
     "is_manifest_valid",

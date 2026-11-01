@@ -711,3 +711,47 @@ def validate_payload_signature(
     elif expected_format == "dbf":
         if size < 32:
             raise InvalidPayloadSignatureError(f"Arquivo DBF muito curto: {size} bytes")
+
+
+_EXPECTED_FORMAT_BY_SUFFIX: dict[str, ExpectedFormat] = {
+    ".zip": "zip",
+    ".xlsx": "xlsx",
+    ".7z": "7z",
+    ".gz": "gz",
+    ".zst": "zst",
+    ".parquet": "parquet",
+    ".pdf": "pdf",
+    ".dbc": "dbc",
+    ".dbf": "dbf",
+    ".csv": "csv",
+    ".tsv": "csv",
+    ".txt": "txt",
+    ".json": "json",
+    ".ndjson": "ndjson",
+    ".jsonl": "ndjson",
+    ".xml": "xml",
+    ".html": "html",
+    ".htm": "html",
+}
+
+
+def expected_format_for_path(
+    path_or_name: str | os.PathLike[str],
+) -> ExpectedFormat | None:
+    """Infer the expected payload format from a filename extension.
+
+    The ``@YYYYMMDD``/``@YYYYMMDDTHHMMSS`` vintage stamp does not interfere:
+    ``Path.suffix`` always resolves to the extension after the last dot
+    (``slug_2024@20240315.csv`` → ``.csv``). Unknown extensions return
+    ``None`` so callers can safely skip signature validation instead of
+    guessing (and wrongly rejecting) a payload.
+
+    Args:
+        path_or_name: A filename or path whose extension names the format.
+
+    Returns:
+        ExpectedFormat | None: The format, or ``None`` when the extension is
+        not recognized.
+    """
+    suffix = Path(path_or_name).suffix.lower()
+    return _EXPECTED_FORMAT_BY_SUFFIX.get(suffix)

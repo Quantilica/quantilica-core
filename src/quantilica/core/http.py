@@ -39,6 +39,7 @@ from .manifests import (
     write_manifest_sidecar,
 )
 from .retry import RetryError, async_retry_call, exponential_delay, retry_call
+from .storage import validate_payload_signature
 
 ProgressCallback = Callable[[int, int], None]
 """Callback invoked as ``(downloaded_bytes, total_bytes)`` during a stream.
@@ -822,6 +823,7 @@ class HttpClient:
         max_bytes: int | None = None,
         expect_header: Callable[[bytes], bool] | None = None,
         allow_header_only: bool = True,
+        expected_format: str | None = None,
     ) -> Path:
         """Stream a URL to disk with freshness check, atomic write, and manifest.
 
@@ -874,6 +876,12 @@ class HttpClient:
             max_bytes: Maximum allowed bytes to download before raising StorageError.
             expect_header: Optional validator callable for first non-empty header line.
             allow_header_only: Whether files containing only a header line are ok.
+            expected_format: Optional payload format (e.g. ``"zip"``, ``"parquet"``,
+                ``"csv"``). When provided, the streamed ``.tmp`` is validated via
+                :func:`quantilica.core.storage.validate_payload_signature` before
+                the atomic commit — rejecting Soft-200 HTML/WAF pages, wrong magic
+                bytes and truncated archives. ``None`` skips the check (backward
+                compatible).
 
         Returns:
             Path: The path to the downloaded file.
@@ -1091,6 +1099,8 @@ class HttpClient:
                     expect_header=expect_header,
                     allow_header_only=allow_header_only,
                 )
+                if expected_format is not None:
+                    validate_payload_signature(temp_path, expected_format)
                 temp_path.replace(target)
             finally:
                 if temp_path.exists():
@@ -1766,6 +1776,7 @@ class AsyncHttpClient:
         check_size: bool = True,
         progress: ProgressCallback | None = None,
         chunk_size: int = DEFAULT_STREAM_CHUNK_SIZE,
+        expected_format: str | None = None,
     ) -> Path:
         """Stream a URL to disk asynchronously with freshness check and manifest.
 
@@ -1784,6 +1795,8 @@ class AsyncHttpClient:
             check_size: Whether to check file size for freshness.
             progress: Optional progress callback.
             chunk_size: The chunk size for streaming.
+            expected_format: Optional payload format validated before the atomic
+                commit (see the sync :meth:`download_with_manifest`).
 
         Returns:
             Path: The path to the downloaded file.
@@ -1939,6 +1952,8 @@ class AsyncHttpClient:
                 outcome["sha256"] = digest.hexdigest()
                 outcome["size_bytes"] = downloaded
                 check_payload(temp_path, target.name)
+                if expected_format is not None:
+                    validate_payload_signature(temp_path, expected_format)
                 temp_path.replace(target)
             finally:
                 if temp_path.exists():

@@ -7,8 +7,31 @@ from pathlib import Path
 import pytest
 
 from quantilica.core.exceptions import InvalidPayloadSignatureError
-from quantilica.core.storage import validate_payload_signature
+from quantilica.core.storage import expected_format_for_path, validate_payload_signature
 from quantilica.core.sync import FreshnessPolicy
+
+
+def test_expected_format_for_path_recognizes_extensions():
+    assert expected_format_for_path("ca-combustiveis_2024-S1@20240810.csv") == "csv"
+    assert expected_format_for_path("empresas_2025-07@20250710.zip") == "zip"
+    assert expected_format_for_path("capacidade-geracao@20261020.parquet") == "parquet"
+    assert expected_format_for_path("planilha.xlsx") == "xlsx"
+    assert expected_format_for_path("dados_N1.ndjson") == "ndjson"
+    assert expected_format_for_path("lote.jsonl") == "ndjson"
+    assert expected_format_for_path("arquivo.7z") == "7z"
+    assert expected_format_for_path("arquivo.pdf") == "pdf"
+    assert expected_format_for_path("microdado.dbc") == "dbc"
+
+
+def test_expected_format_for_path_unknown_returns_none():
+    assert expected_format_for_path("data.bin") is None
+    assert expected_format_for_path("sem-extensao") is None
+    assert expected_format_for_path("data.tar.gz").lower() == "gz"
+
+
+def test_expected_format_for_path_case_insensitive():
+    assert expected_format_for_path("DATA.CSV") == "csv"
+    assert expected_format_for_path("file.Parquet") == "parquet"
 
 
 def test_validate_payload_signature_min_bytes():
