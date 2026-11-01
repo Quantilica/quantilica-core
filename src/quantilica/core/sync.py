@@ -141,7 +141,7 @@ class HttpFreshnessProbe:
         Args:
             client: The HTTP client used to fetch remote metadata.
             policy: Freshness policy governing probes
-                (HEAD_OR_MANIFEST, HEAD_FALLBACK_GET).
+                (HEAD_OR_MANIFEST, HEAD_FALLBACK_GET, REMOTE_ONLY).
         """
         self._client = client
         self.policy = FreshnessPolicy(policy)
@@ -154,9 +154,16 @@ class HttpFreshnessProbe:
 
         Returns:
             RemoteStat | None: The stats reported by the server, or None when
-            the request fails, redirects away, or the server reports nothing
-            useful (e.g. ``Content-Length=0`` on HEAD).
+            the request fails, redirects away, the server reports nothing
+            useful (e.g. ``Content-Length=0`` on HEAD), or the policy is
+            ``REMOTE_ONLY`` (content-addressed freshness — see below).
         """
+        if self.policy == FreshnessPolicy.REMOTE_ONLY:
+            # F3: freshness is content-addressed. HTTP headers are neither
+            # reliable nor wanted here; the CAS sha256 dedup (ADR 2026-10-16,
+            # workers/ingest/orchestrator.py) is the single source of truth,
+            # so a HEAD probe would be wasted work (and can trigger WAF).
+            return None
         response = None
         try:
             response = self._client.head_or_get(url)

@@ -8,6 +8,7 @@ from pathlib import Path
 import httpx2
 
 from quantilica.core import (
+    FreshnessPolicy,
     FreshnessProbe,
     FtpFreshnessProbe,
     HttpFreshnessProbe,
@@ -125,6 +126,22 @@ def test_http_freshness_probe_none_when_no_metadata():
 
     client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
     assert HttpFreshnessProbe(client).probe("https://example.test/data") is None
+
+
+def test_http_freshness_probe_remote_only_skips_network():
+    # F3: content-addressed freshness — a HEAD probe is wasted work (and can
+    # trigger WAF), so the probe must return None without touching the wire.
+    calls: list[str] = []
+
+    def handler(request):
+        calls.append(request.method)
+        return httpx2.Response(200, headers={"Content-Length": "3"})
+
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
+    probe = HttpFreshnessProbe(client, policy=FreshnessPolicy.REMOTE_ONLY)
+
+    assert probe.probe("https://example.test/data") is None
+    assert calls == []
 
 
 # ---------------------------------------------------------------------------
