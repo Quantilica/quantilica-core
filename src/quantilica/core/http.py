@@ -821,7 +821,7 @@ class HttpClient:
         chunk_size: int = DEFAULT_STREAM_CHUNK_SIZE,
         max_bytes: int | None = None,
         expect_header: Callable[[bytes], bool] | None = None,
-        allow_header_only: bool = False,
+        allow_header_only: bool = True,
     ) -> Path:
         """Stream a URL to disk with freshness check, atomic write, and manifest.
 
