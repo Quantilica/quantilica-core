@@ -270,6 +270,7 @@ class HttpClient:
         min_interval: float = 0.0,
         host_policies: Mapping[str, HostPolicy] | None = None,
         jitter: float = 0.5,
+        http2: bool = False,
     ) -> None:
         if emulate_browser:
             default_headers: dict[str, str] = dict(BROWSER_HEADERS)
@@ -300,6 +301,7 @@ class HttpClient:
         self.emulate_browser = emulate_browser
         self.host_policies = dict(host_policies or {})
         self.jitter = float(jitter)
+        self.http2 = http2
         self._rate_limiter = _RateLimiter(max(0.0, float(min_interval)))
         self._host_rate_limiters: dict[str, RateLimiter] = {}
         self._host_semaphores: dict[str, threading.BoundedSemaphore] = {}
@@ -346,6 +348,7 @@ class HttpClient:
             transport=self.transport,
             cookies=self.cookies,
             limits=self.limits,
+            http2=self.http2,
         )
 
     def _get_client(self) -> tuple[httpx2.Client, bool]:
