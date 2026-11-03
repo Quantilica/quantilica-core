@@ -827,6 +827,7 @@ class HttpClient:
         expect_header: Callable[[bytes], bool] | None = None,
         allow_header_only: bool = True,
         expected_format: str | None = None,
+        deduplicate_by_sha256: bool = False,
     ) -> Path:
         """Stream a URL to disk with freshness check, atomic write, and manifest.
 
@@ -841,6 +842,17 @@ class HttpClient:
         (sidecar-only retention). If the sidecar exists but is corrupted
         (e.g. not a JSON object), the check fails safe: the file is simply
         (re)downloaded.
+
+        **CAS-by-SHA256 deduplication (F3 policy):** when
+        ``deduplicate_by_sha256=True``, after downloading the content the
+        function checks for existing files in the same directory with the
+        same logical base name (slug + partition, different @YYYYMMDD
+        timestamp) and compares their manifest SHA-256. If a match is found,
+        the new download is discarded and the existing file is returned,
+        preventing creation of a new timestamped version when content is
+        unchanged. This implements the "remote_only + CAS sha256" policy
+        for A7 sources (dynamic exports without reliable HTTP metadata)
+        per ADR 2026-10-30.
 
         The provenance sidecar written after a successful GET always records
         the headers captured from the GET stream itself (``ETag`` /
@@ -1104,6 +1116,27 @@ class HttpClient:
                 )
                 if expected_format is not None:
                     validate_payload_signature(temp_path, expected_format)
+
+                # CAS-by-SHA256 deduplication (F3 policy): if enabled, check for
+                # existing file with same content before creating new @YYYYMMDD version.
+                if deduplicate_by_sha256:
+                    existing = _find_existing_by_sha256(
+                        target, outcome["sha256"], self.logger
+                    )
+                    if existing is not None:
+                        self.logger.debug(
+                            f"CAS-by-SHA256 deduplication: returning existing "
+                            f"{existing.name} instead of creating new {target.name}"
+                        )
+                        # Clean up temp file
+                        with contextlib.suppress(OSError):
+                            temp_path.unlink()
+                        # Sync mtime and return existing (already has manifest)
+                        _sync_mtime_from_last_modified(
+                            existing, outcome.get("last_modified")
+                        )
+                        return existing
+
                 temp_path.replace(target)
             finally:
                 if temp_path.exists():
@@ -1203,6 +1236,73 @@ class HttpClient:
                         url_str = str(response.url)
                         raise HttpStatusError(url_str, response.status_code) from exc
                     yield response
+
+
+def _find_existing_by_sha256(
+    target: Path,
+    sha256: str,
+    logger: logging.Logger,
+) -> Path | None:
+    """Find an existing file in the same directory with matching SHA-256.
+
+    Used for CAS-by-SHA256 deduplication (F3 policy in ADR 2026-10-30):
+    when a source regenerates files daily with identical content, we avoid
+    creating a new @YYYYMMDD version by matching against existing manifests.
+
+    Args:
+        target: The target path that would be created (includes @timestamp).
+        sha256: The SHA-256 of the newly downloaded content.
+        logger: Logger for debug output.
+
+    Returns:
+        Path to existing file with matching SHA-256, or None if not found.
+    """
+    # Extract base slug from target (e.g., "megasena@20261102.xlsx" -> "megasena")
+    stem = target.stem
+    if "@" not in stem:
+        return None
+    base_slug = stem.split("@")[0]
+    ext = target.suffix.lstrip(".")
+    directory = target.parent
+
+    if not directory.exists():
+        return None
+
+    # Look for all files matching the base slug pattern
+    for existing in directory.iterdir():
+        if not existing.is_file():
+            continue
+        if existing.name == target.name:
+            continue
+        if existing.name.endswith(".manifest.json"):
+            continue
+        # Check if it's a variant of the same base slug
+        existing_stem = existing.stem
+        if "@" not in existing_stem:
+            continue
+        existing_base = existing_stem.split("@")[0]
+        if existing_base != base_slug:
+            continue
+        if not existing.name.endswith(f".{ext}"):
+            continue
+
+        # Read manifest to get SHA-256
+        manifest_path = existing.with_name(f"{existing.name}.manifest.json")
+        if not manifest_path.exists():
+            continue
+        try:
+            import json
+
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if manifest.get("sha256") == sha256:
+                logger.debug(
+                    f"CAS-by-SHA256 match found: {existing.name} has same content "
+                    f"as {target.name}, skipping new version creation"
+                )
+                return existing
+        except (OSError, ValueError):
+            continue
+    return None
 
 
 @dataclass(frozen=True)

@@ -996,6 +996,152 @@ def test_download_with_manifest_corrupt_sidecar_failsafe_downloads(
     assert manifest["sha256"] == hashlib.sha256(payload).hexdigest()
 
 
+def test_download_with_manifest_cas_sha256_deduplication(tmp_path):
+    """CAS-by-SHA256: returns existing file when content matches (F3 policy).
+
+    Implements remote_only + CAS sha256 for A7 sources per ADR 2026-10-30.
+    When a source regenerates files daily with identical content, avoids
+    creating a new @YYYYMMDD version.
+    """
+    import hashlib
+
+    content = b"identical content for deduplication test"
+    sha256 = hashlib.sha256(content).hexdigest()
+
+    # Create existing file with "yesterday's" timestamp
+    existing = tmp_path / "dataset" / "data@20261102.csv"
+    existing.parent.mkdir(parents=True)
+    existing.write_bytes(content)
+
+    # Create manifest for existing file
+    manifest = {
+        "sha256": sha256,
+        "size_bytes": len(content),
+        "source_id": "loterias",
+        "dataset_id": "concursos",
+        "url": "https://example.test/data.csv",
+        "producer": "loterias",
+    }
+    (existing.with_name(f"{existing.name}.manifest.json")).write_text(
+        json.dumps(manifest)
+    )
+
+    # Target for "today" (different timestamp, same content)
+    target = tmp_path / "dataset" / "data@20261103.csv"
+
+    # Mock server returning identical content
+    handler = _download_handler_factory(content)
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
+
+    # Download with deduplication enabled
+    out = client.download_with_manifest(
+        "https://example.test/data.csv",
+        target,
+        source_id="loterias",
+        dataset_id="concursos",
+        producer="loterias",
+        deduplicate_by_sha256=True,
+    )
+
+    # Should return the EXISTING file, not create new one
+    assert out == existing, "Should return existing file with matching SHA-256"
+    assert not target.exists(), "New timestamped file should not be created"
+    assert existing.read_bytes() == content
+
+
+def test_download_with_manifest_cas_sha256_no_match_creates_new(tmp_path):
+    """CAS-by-SHA256: when no matching SHA-256 found, creates new version."""
+    import hashlib
+
+    content_new = b"new content different from existing"
+    content_old = b"old content"
+
+    # Create existing file with different content
+    existing = tmp_path / "dataset" / "data@20261102.csv"
+    existing.parent.mkdir(parents=True)
+    existing.write_bytes(content_old)
+
+    manifest = {
+        "sha256": hashlib.sha256(content_old).hexdigest(),
+        "size_bytes": len(content_old),
+        "source_id": "loterias",
+        "dataset_id": "concursos",
+        "url": "https://example.test/data.csv",
+        "producer": "loterias",
+    }
+    (existing.with_name(f"{existing.name}.manifest.json")).write_text(
+        json.dumps(manifest)
+    )
+
+    # Target for today with new content
+    target = tmp_path / "dataset" / "data@20261103.csv"
+
+    # Mock server returning new content
+    handler = _download_handler_factory(content_new)
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
+
+    # Download with deduplication enabled
+    out = client.download_with_manifest(
+        "https://example.test/data.csv",
+        target,
+        source_id="loterias",
+        dataset_id="concursos",
+        producer="loterias",
+        deduplicate_by_sha256=True,
+    )
+
+    # Should create new file since SHA-256 differs
+    assert out == target, "Should create new file when content differs"
+    assert target.exists(), "New timestamped file should be created"
+    assert target.read_bytes() == content_new
+    assert existing.exists(), "Old file should still exist"
+
+
+def test_download_with_manifest_cas_sha256_disabled_creates_new(tmp_path):
+    """Without deduplicate_by_sha256, always creates new version."""
+    import hashlib
+
+    content = b"same content"
+
+    # Create existing file
+    existing = tmp_path / "dataset" / "data@20261102.csv"
+    existing.parent.mkdir(parents=True)
+    existing.write_bytes(content)
+
+    manifest = {
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "size_bytes": len(content),
+        "source_id": "loterias",
+        "dataset_id": "concursos",
+        "url": "https://example.test/data.csv",
+        "producer": "loterias",
+    }
+    (existing.with_name(f"{existing.name}.manifest.json")).write_text(
+        json.dumps(manifest)
+    )
+
+    # Target for today
+    target = tmp_path / "dataset" / "data@20261103.csv"
+
+    handler = _download_handler_factory(content)
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
+
+    # Download WITHOUT deduplication
+    out = client.download_with_manifest(
+        "https://example.test/data.csv",
+        target,
+        source_id="loterias",
+        dataset_id="concursos",
+        producer="loterias",
+        deduplicate_by_sha256=False,
+    )
+
+    # Should create new file even though content is identical
+    assert out == target, "Should create new file when deduplication disabled"
+    assert target.exists(), "New timestamped file should be created"
+    assert existing.exists(), "Old file should still exist"
+
+
 @pytest.mark.parametrize("bad_payload", ["[]", '"just-a-string"'])
 def test_is_remote_more_recent_corrupt_sidecar_failsafe(tmp_path, bad_payload):
     """Corrupt sidecar with no local file must be treated as stale (refetch)."""
