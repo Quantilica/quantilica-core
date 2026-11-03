@@ -5,6 +5,24 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.16.0] - 2026-11-03
+
+### Adicionado
+
+- `lake.partition_types_for()`, `lake.composite_file_key()` e `lake.CANONICAL_PARTITION_TYPES`: tipos canônicos das chaves de partição do lake e chave de arquivo composta (arquivo mais membro, como a aba de uma planilha). `storage.format_partition_token()` e `BaseDataRepository.path_for_entry()` montam o token de partição ISO 8601 (ano, semestre, trimestre, mês, geografia) e o caminho de destino de uma entrada, para os repositórios de dados dos coletores concordarem entre si.
+- `validate_payload_signature()`, `expected_format_for_path()`, `ExpectedFormat`, `InvalidPayloadSignatureError` e `EmptyPayloadError`: conferem a assinatura do conteúdo baixado contra o formato esperado, rejeitando página de erro ou bloqueio de firewall servida com HTTP 200, arquivo vazio e ZIP/XLSX corrompido. `download_with_manifest()` (síncrono e assíncrono) chama a conferência antes de gravar o arquivo (parâmetros `expected_format`, `expect_header`, `max_bytes` e `allow_header_only`, este último ligado por padrão).
+- `download_with_manifest(deduplicate_by_sha256=True)`: depois do download, compara o SHA-256 com os arquivos já gravados no mesmo diretório com o mesmo nome lógico (só a data `@AAAAMMDD` difere) e devolve o existente, sem criar uma versão nova do mesmo conteúdo.
+- `sync.FreshnessPolicy` (`head_or_manifest`, `head_fallback_get`, `remote_only`) e o parâmetro `policy` de `HttpFreshnessProbe`. Com `remote_only` a frescura é decidida pelo conteúdo (SHA-256) e a sonda não faz nenhuma requisição.
+- `HttpClient` e `AsyncHttpClient` aceitam `host_policies` (`http.HostPolicy`: intervalo mínimo, concorrência máxima, prazo total, limite de redirecionamentos e nova tentativa em fim de conexão TLS por host). `HttpClient` ganha `http2` (desligado por padrão, para não travar em servidores com HTTP/2 mal implementado) e `jitter`; `AsyncHttpClient` ganha `min_interval`. `exceptions.TooManyRedirects` sinaliza o excesso de redirecionamentos.
+- `retry`: o cabeçalho `Retry-After` das respostas com status de nova tentativa (408, 429, 5xx) passa a ser respeitado como espera entre tentativas, e `RetryableHttpStatusError` ganha `retry_after`.
+- `ckan.CkanClient`, `ckan.pick_resources()` e `exceptions.CkanError`: cliente da API v3 de portais CKAN (`status_show`, `package_show`, `package_search` paginado).
+- `http.remote_zip_members()` e `http.ZipMember`: lista os membros de um ZIP remoto por requisições `Range`, sem baixar o arquivo inteiro.
+- `DownloadManifest` ganha os campos opcionais `content_sha256` e `normalizer`.
+
+### Corrigido
+
+- O teste do limite de taxa tolera a resolução do relógio no Windows.
+
 ## [0.15.0] - 2026-10-30
 
 ### Adicionado
