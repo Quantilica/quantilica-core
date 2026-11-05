@@ -1097,6 +1097,76 @@ def test_download_with_manifest_cas_sha256_no_match_creates_new(tmp_path):
     assert existing.exists(), "Old file should still exist"
 
 
+def _zip_bytes(payload: bytes) -> bytes:
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.txt", payload)
+    return buf.getvalue()
+
+
+def _cas_download(tmp_path, content, target_name="sigtap_202601@20261104.zip"):
+    target = tmp_path / "dataset" / target_name
+    handler = _download_handler_factory(content)
+    client = HttpClient(attempts=1, transport=httpx2.MockTransport(handler))
+    out = client.download_with_manifest(
+        "https://example.test/sigtap.zip",
+        target,
+        source_id="sigtap",
+        dataset_id="tabelas",
+        producer="sigtap",
+        deduplicate_by_sha256=True,
+    )
+    return target, out
+
+
+def test_cas_sha256_dedups_against_legacy_file_without_stamp_manifest(tmp_path):
+    """Legado sem ``@AAAAMMDD`` e com manifesto: mesmo sha devolve o existente."""
+    content = _zip_bytes(b"zip legado")
+    legacy = tmp_path / "dataset" / "sigtap_202601.zip"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(content)
+    legacy.with_name(f"{legacy.name}.manifest.json").write_text(
+        json.dumps({"sha256": hashlib.sha256(content).hexdigest()})
+    )
+    target, out = _cas_download(tmp_path, content)
+    assert out == legacy
+    assert not target.exists()
+
+
+def test_cas_sha256_dedups_against_legacy_file_without_manifest(tmp_path):
+    """Legado sem manifesto: o sha é calculado do próprio arquivo."""
+    content = _zip_bytes(b"zip legado sem manifesto")
+    legacy = tmp_path / "dataset" / "sigtap_202601.zip"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(content)
+    target, out = _cas_download(tmp_path, content)
+    assert out == legacy
+    assert not target.exists()
+
+
+def test_cas_sha256_legacy_file_with_different_sha_versions_normally(tmp_path):
+    legacy = tmp_path / "dataset" / "sigtap_202601.zip"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(_zip_bytes(b"antigo"))
+    target, out = _cas_download(tmp_path, _zip_bytes(b"novo conteudo"))
+    assert out == target
+    assert target.read_bytes() == _zip_bytes(b"novo conteudo")
+    assert legacy.read_bytes() == _zip_bytes(b"antigo")
+
+
+def test_cas_sha256_legacy_other_key_or_extension_is_not_matched(tmp_path):
+    content = _zip_bytes(b"mesmo conteudo")
+    d = tmp_path / "dataset"
+    d.mkdir(parents=True)
+    (d / "sigtap_202602.zip").write_bytes(content)  # outra chave
+    (d / "sigtap_202601.csv").write_bytes(content)  # outra extensão
+    target, out = _cas_download(tmp_path, content)
+    assert out == target
+
+
 def test_download_with_manifest_cas_sha256_disabled_creates_new(tmp_path):
     """Without deduplicate_by_sha256, always creates new version."""
     import hashlib

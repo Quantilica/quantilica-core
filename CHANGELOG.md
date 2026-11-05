@@ -5,6 +5,12 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [Não publicado]
+
+### Corrigido
+
+- `download_with_manifest(deduplicate_by_sha256=True)` também deduplica contra arquivos legados sem o carimbo `@AAAAMMDD` no nome (mesma chave lógica e extensão, por exemplo `X.zip` contra `X@20261104.zip`). O SHA-256 do legado vem do manifesto ou, se não houver, é calculado do arquivo. Antes, o sync criava uma versão `@<hoje>` com conteúdo idêntico (caso dos ZIPs do sigtap). `file_key()` e `composite_file_key()` não mudam.
+
 ## [0.16.0] - 2026-11-03
 
 ### Adicionado

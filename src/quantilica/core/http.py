@@ -8,6 +8,7 @@ import dataclasses
 import datetime as dt
 import email.utils
 import hashlib
+import json
 import logging
 import os
 import ssl
@@ -1248,6 +1249,9 @@ def _find_existing_by_sha256(
     Used for CAS-by-SHA256 deduplication (F3 policy in ADR 2026-10-30):
     when a source regenerates files daily with identical content, we avoid
     creating a new @YYYYMMDD version by matching against existing manifests.
+    Legacy files without the ``@YYYYMMDD`` stamp (same logical key and
+    extension) are also matched; their SHA-256 comes from the manifest or,
+    when there is none, is computed from the file itself.
 
     Args:
         target: The target path that would be created (includes @timestamp).
@@ -1257,18 +1261,20 @@ def _find_existing_by_sha256(
     Returns:
         Path to existing file with matching SHA-256, or None if not found.
     """
-    # Extract base slug from target (e.g., "megasena@20261102.xlsx" -> "megasena")
-    stem = target.stem
-    if "@" not in stem:
+    from .files import sha256_file
+    from .lake import file_key
+
+    # A chave lógica ignora a extensão e o carimbo ``@AAAAMMDD``; o arquivo
+    # legado (sem ``@``) tem a mesma chave do nome com carimbo.
+    if "@" not in target.stem:
         return None
-    base_slug = stem.split("@")[0]
-    ext = target.suffix.lstrip(".")
+    base_key = file_key(target)
+    ext = target.suffix.lower()
     directory = target.parent
 
     if not directory.exists():
         return None
 
-    # Look for all files matching the base slug pattern
     for existing in directory.iterdir():
         if not existing.is_file():
             continue
@@ -1276,32 +1282,28 @@ def _find_existing_by_sha256(
             continue
         if existing.name.endswith(".manifest.json"):
             continue
-        # Check if it's a variant of the same base slug
-        existing_stem = existing.stem
-        if "@" not in existing_stem:
+        if existing.suffix.lower() != ext:
             continue
-        existing_base = existing_stem.split("@")[0]
-        if existing_base != base_slug:
-            continue
-        if not existing.name.endswith(f".{ext}"):
+        if file_key(existing) != base_key:
             continue
 
-        # Read manifest to get SHA-256
+        existing_sha: str | None = None
         manifest_path = existing.with_name(f"{existing.name}.manifest.json")
-        if not manifest_path.exists():
-            continue
         try:
-            import json
-
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if manifest.get("sha256") == sha256:
-                logger.debug(
-                    f"CAS-by-SHA256 match found: {existing.name} has same content "
-                    f"as {target.name}, skipping new version creation"
-                )
-                return existing
+            if manifest_path.exists():
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                existing_sha = manifest.get("sha256")
+            elif "@" not in existing.stem:
+                # Arquivo legado sem carimbo e sem manifesto: calcula o hash.
+                existing_sha = sha256_file(existing)
         except (OSError, ValueError):
             continue
+        if existing_sha == sha256:
+            logger.debug(
+                f"CAS-by-SHA256 match found: {existing.name} has same content "
+                f"as {target.name}, skipping new version creation"
+            )
+            return existing
     return None
 
 
