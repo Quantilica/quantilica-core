@@ -7,6 +7,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+## [0.17.0] - 2026-11-06
+
 ### Corrigido
 
 - `download_with_manifest` (sync e async) não aceita mais como completo um download truncado quando o servidor responde sem `Content-Length` (`Transfer-Encoding: chunked`). O tamanho esperado passa a vir do total do `Content-Range` (qualquer diferença é erro) ou, na falta dele, do sufixo de um `ETag` no formato `"<mtime>-<tamanho>"` (heurístico: só um download menor conta como truncado). A transferência incompleta é retentada com retomada por `Range`; esgotadas as tentativas, levanta o novo `IncompleteDownloadError` (subclasse de `StorageError`) sem promover o arquivo nem gravar o manifest. Respostas com `Content-Encoding` diferente de `identity` não são verificadas.
