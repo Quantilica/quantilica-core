@@ -9,6 +9,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ### Corrigido
 
+- `decompress_archive` não escolhe mais, entre vários arquivos extraídos, lock files do Office (`~$*`), checksums (`md5_*`), `Thumbs.db`, `.DS_Store` nem entradas de `__MACOSX/`. A escolha nos demais casos não muda.
+
 - `download_with_manifest(deduplicate_by_sha256=True)` também deduplica contra arquivos legados sem o carimbo `@AAAAMMDD` no nome (mesma chave lógica e extensão, por exemplo `X.zip` contra `X@20261104.zip`). O SHA-256 do legado vem do manifesto ou, se não houver, é calculado do arquivo. Antes, o sync criava uma versão `@<hoje>` com conteúdo idêntico (caso dos ZIPs do sigtap). `file_key()` e `composite_file_key()` não mudam.
 
 ## [0.16.0] - 2026-11-03

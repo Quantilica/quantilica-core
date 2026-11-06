@@ -319,3 +319,43 @@ def test_decompress_archive_exported_from_package_root():
     assert quantilica.core.decompress_archive is decompress_archive
     assert "decompress_archive" in quantilica.core.__all__
     assert sys.version_info >= (3, 12)
+
+
+def test_decompress_archive_ignora_arquivos_de_lixo(tmp_path):
+    """Lock do Office, checksum, Thumbs.db, .DS_Store e __MACOSX não são escolhidos."""
+    archive = _make_zip(
+        tmp_path,
+        {
+            "__MACOSX/dados.csv": b"lixo",
+            "~$dados.xlsx": b"lock",
+            "md5_dados.txt": b"abc  dados.csv",
+            "MD5_outro.csv": b"abc",
+            "Thumbs.db": b"x",
+            ".DS_Store": b"x",
+            "dados.csv": b"a,b\n1,2\n",
+        },
+    )
+    out = tmp_path / "out"
+    result = decompress_archive(archive, out)
+    assert result.name == "dados.csv"
+    assert "__MACOSX" not in result.parts
+
+
+def test_decompress_archive_junk_nao_vence_com_target_extensions(tmp_path):
+    archive = _make_zip(
+        tmp_path,
+        {"~$dados.xlsx": b"lock", "pasta/dados.xlsx": b"real"},
+    )
+    result = decompress_archive(archive, tmp_path / "out", (".xlsx",))
+    assert result.name == "dados.xlsx"
+
+
+def test_decompress_archive_escolha_normal_inalterada(tmp_path):
+    archive = _make_zip(tmp_path, {"leia.pdf": b"x", "a.csv": b"1", "b.csv": b"2"})
+    assert decompress_archive(archive, tmp_path / "out").name == "a.csv"
+
+
+def test_decompress_archive_so_lixo_devolve_diretorio(tmp_path):
+    archive = _make_zip(tmp_path, {"Thumbs.db": b"x", "md5_a.txt": b"x"})
+    out = tmp_path / "out"
+    assert decompress_archive(archive, out) == out

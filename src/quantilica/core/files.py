@@ -604,7 +604,9 @@ def decompress_archive(
     - A single extracted file is returned directly.
     - Multiple extracted files: the first matching a common data extension
       (``.csv``, ``.xls``, ``.xlsx``, ``.json``, ...) if any, otherwise the
-      destination directory itself.
+      destination directory itself. Office lock files (``~$*``), ``md5_*``
+      checksums, ``Thumbs.db``, ``.DS_Store`` and ``__MACOSX/`` entries are
+      never chosen.
 
     Args:
         archive_path: Path to the archive to decompress.
@@ -650,6 +652,21 @@ def decompress_archive(
     return _pick_result(extracted, dest, target_extensions)
 
 
+def _is_junk_member(path: Path) -> bool:
+    """Whether an extracted file is archive/OS noise rather than data.
+
+    Covers Office lock files (``~$*``), checksum files (``md5_*``),
+    ``Thumbs.db``, ``.DS_Store`` and anything under ``__MACOSX/``.
+    """
+    name = path.name.lower()
+    return (
+        name.startswith("~$")
+        or name.startswith("md5_")
+        or name in {"thumbs.db", ".ds_store"}
+        or "__macosx" in (part.lower() for part in path.parts)
+    )
+
+
 def _pick_result(
     extracted: list[Path],
     dest: Path,
@@ -671,7 +688,9 @@ def _pick_result(
     )
     if extensions:
         for candidate in extracted:
-            if candidate.suffix.lower() in extensions:
+            if candidate.suffix.lower() in extensions and not _is_junk_member(
+                candidate
+            ):
                 return candidate
         raise StorageError(
             f"No extracted file matches target extensions {extensions} in {dest}"
@@ -680,6 +699,6 @@ def _pick_result(
         return extracted[0]
     common = (".csv", ".json", ".xls", ".xlsx", ".txt", ".xml")
     for candidate in extracted:
-        if candidate.suffix.lower() in common:
+        if candidate.suffix.lower() in common and not _is_junk_member(candidate):
             return candidate
     return dest
