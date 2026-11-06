@@ -191,6 +191,7 @@ def write_text_atomic(
 _DATA_SUFFIXES = frozenset(
     {
         ".csv",
+        ".tsv",
         ".txt",
         ".zip",
         ".7z",
@@ -211,6 +212,7 @@ def check_payload(
     *,
     expect_header: Callable[[bytes], bool] | None = None,
     allow_header_only: bool = False,
+    require_final_newline: bool = False,
 ) -> None:
     """Reject a downloaded file whose content contradicts its name.
 
@@ -223,6 +225,13 @@ def check_payload(
     If ``expect_header`` is provided, it receives the first non-empty line of the file.
     If ``allow_header_only`` is False, a text/CSV file containing only a header or empty
     raises ``EmptyPayloadError``.
+
+    If ``require_final_newline`` is True, a non-empty ``.csv``/``.tsv``/``.txt``
+    must end in ``\\n`` (so ``\\r\\n`` also passes); a missing final newline
+    signals a truncated transfer. It is off by default because legitimate
+    files may lack it; ``download_with_manifest`` enables it only when the
+    download size could not be verified (no ``Content-Length``, ``Content-Range``
+    total or size-bearing ``ETag``).
 
     Raises:
         CorruptPayloadError: If the content is not valid for the extension.
@@ -262,6 +271,18 @@ def check_payload(
             raise CorruptPayloadError(
                 f"{name or path.name}: cabeçalho não confere com o esperado"
             )
+
+    if require_final_newline and suffix in (".csv", ".tsv", ".txt"):
+        size = path.stat().st_size
+        if size > 0:
+            with open(path, "rb") as fh:
+                fh.seek(size - 1)
+                last = fh.read(1)
+            if last != b"\n":
+                raise CorruptPayloadError(
+                    f"{name or path.name}: não termina em quebra de linha "
+                    "(download possivelmente truncado)"
+                )
 
     if suffix in (".csv", ".txt"):
         with open(path, "rb") as fh:

@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import ssl
 import struct
 import tempfile
@@ -130,6 +131,60 @@ class HostPolicy:
     retry_on_tls_eof: bool = True
 
 
+class IncompleteDownloadError(StorageError):
+    """A body without ``Content-Length`` ended short of the size the server implied.
+
+    Raised (after retries/resumes are exhausted) when the downloaded size is
+    smaller than the total advertised by ``Content-Range`` or by an
+    ``ETag`` of the form ``"<mtime>-<size>"``. The temporary file is never
+    promoted and no manifest is written.
+    """
+
+
+_CONTENT_RANGE_TOTAL_RE = re.compile(r"^\s*bytes\s+(?:\d+-\d+|\*)/(\d+)\s*$", re.I)
+# Strict ``"<mtime>-<size>"`` ETag (Apache/ckan and common servers). Heuristic:
+# any other shape (opaque hashes, multi-part tokens) is ignored.
+_ETAG_SIZE_RE = re.compile(r'^(W/)?"?\d+(\.\d+)?-(\d+)"?$')
+
+
+def _implied_total(headers: Mapping[str, str]) -> tuple[int, str] | None:
+    """Return ``(total_bytes, source)`` implied by headers lacking Content-Length.
+
+    ``source`` is ``"content-range"`` (authoritative: any difference is an
+    error) or ``"etag"`` (heuristic: only a smaller download is an error).
+    Returns ``None`` when ``Content-Length`` is present, the body is
+    content-encoded (decoded size differs from the wire size), or nothing
+    usable is advertised.
+    """
+    if headers.get("Content-Length"):
+        return None
+    encoding = (headers.get("Content-Encoding") or "").strip().lower()
+    if encoding and encoding != "identity":
+        return None
+    match = _CONTENT_RANGE_TOTAL_RE.match(headers.get("Content-Range") or "")
+    if match:
+        return int(match.group(1)), "content-range"
+    match = _ETAG_SIZE_RE.match((headers.get("ETag") or "").strip())
+    if match and int(match.group(3)) > 0:
+        return int(match.group(3)), "etag"
+    return None
+
+
+def _is_incomplete(
+    implied: tuple[int, str], downloaded: int, logger: logging.Logger
+) -> bool:
+    total, source = implied
+    if downloaded == total:
+        return False
+    if source == "etag" and downloaded > total:
+        logger.debug(
+            f"Downloaded {downloaded} bytes, more than the {total} implied by the "
+            "ETag; ignoring (ETag may be stale)"
+        )
+        return False
+    return True
+
+
 DEFAULT_RETRY_EXCEPTIONS = (
     httpx2.TimeoutException,
     httpx2.ConnectError,
@@ -231,6 +286,7 @@ __all__ = [
     "DEFAULT_LIMITS",
     "DEFAULT_MAX_RESUMES",
     "DEFAULT_RETRY_EXCEPTIONS",
+    "IncompleteDownloadError",
     "DEFAULT_STREAM_CHUNK_SIZE",
     "DEFAULT_TIMEOUT",
     "DEFAULT_USER_AGENT",
@@ -951,6 +1007,7 @@ class HttpClient:
             failures = 0
             resumes = 0
             total = 0
+            size_verified = False
             try:
                 while True:
                     start_downloaded = downloaded
@@ -976,6 +1033,8 @@ class HttpClient:
                                 response.headers.get("Content-Length", 0) or 0
                             )
                             total = downloaded + expected_len
+                            implied = _implied_total(response.headers)
+                            size_verified = expected_len > 0 or implied is not None
                             needed_bytes = (
                                 (total - downloaded)
                                 if expected_len > 0
@@ -1053,6 +1112,14 @@ class HttpClient:
                                         f"Incomplete download for {target.name}: "
                                         f"received {downloaded} bytes, expected {total}"
                                     )
+                                if implied is not None and _is_incomplete(
+                                    implied, downloaded, self.logger
+                                ):
+                                    raise IncompleteDownloadError(
+                                        f"Incomplete download for {target.name}: "
+                                        f"received {downloaded} bytes, "
+                                        f"{implied[1]} implies {implied[0]}"
+                                    )
                             except OSError as exc:
                                 raise StorageError(
                                     f"Could not stream download to {target}"
@@ -1073,7 +1140,7 @@ class HttpClient:
                         if exc.status_code not in RETRY_STATUS_CODES:
                             raise
                         last_error = exc
-                    except DEFAULT_RETRY_EXCEPTIONS as exc:
+                    except (*DEFAULT_RETRY_EXCEPTIONS, IncompleteDownloadError) as exc:
                         last_error = exc
                     else:
                         succeeded = True
@@ -1103,6 +1170,8 @@ class HttpClient:
                         exponential_delay(failures, base_delay=self.retry_base_delay)
                     )
                 if not succeeded:
+                    if isinstance(last_error, IncompleteDownloadError):
+                        raise last_error
                     raise RetryError(
                         f"Operation failed after {self.attempts} attempt(s)",
                         attempts=self.attempts,
@@ -1114,6 +1183,7 @@ class HttpClient:
                     target.name,
                     expect_header=expect_header,
                     allow_header_only=allow_header_only,
+                    require_final_newline=not size_verified,
                 )
                 if expected_format is not None:
                     validate_payload_signature(temp_path, expected_format)
@@ -1948,6 +2018,7 @@ class AsyncHttpClient:
             failures = 0
             resumes = 0
             total = 0
+            size_verified = False
             try:
                 while True:
                     start_downloaded = downloaded
@@ -1968,9 +2039,12 @@ class AsyncHttpClient:
                                 downloaded = 0
                                 restarted = True
                                 digest = hashlib.sha256()
-                            total = downloaded + int(
+                            expected_len = int(
                                 response.headers.get("Content-Length", 0) or 0
                             )
+                            total = downloaded + expected_len
+                            implied = _implied_total(response.headers)
+                            size_verified = expected_len > 0 or implied is not None
                             outcome["etag"] = response.headers.get("ETag")
                             outcome["last_modified"] = response.headers.get(
                                 "Last-Modified"
@@ -2000,6 +2074,14 @@ class AsyncHttpClient:
                                             progress(downloaded, total)
                                     stream.flush()
                                     os.fsync(stream.fileno())
+                                if implied is not None and _is_incomplete(
+                                    implied, downloaded, self.logger
+                                ):
+                                    raise IncompleteDownloadError(
+                                        f"Incomplete download for {target.name}: "
+                                        f"received {downloaded} bytes, "
+                                        f"{implied[1]} implies {implied[0]}"
+                                    )
                             except OSError as exc:
                                 raise StorageError(
                                     f"Could not stream download to {target}"
@@ -2019,7 +2101,7 @@ class AsyncHttpClient:
                         if exc.status_code not in RETRY_STATUS_CODES:
                             raise
                         last_error = exc
-                    except DEFAULT_RETRY_EXCEPTIONS as exc:
+                    except (*DEFAULT_RETRY_EXCEPTIONS, IncompleteDownloadError) as exc:
                         last_error = exc
                     else:
                         succeeded = True
@@ -2050,13 +2132,17 @@ class AsyncHttpClient:
                         exponential_delay(failures, base_delay=self.retry_base_delay)
                     )
                 if not succeeded:
+                    if isinstance(last_error, IncompleteDownloadError):
+                        raise last_error
                     raise RetryError(
                         f"Async operation failed after {self.attempts} attempt(s)",
                         attempts=self.attempts,
                     ) from last_error
                 outcome["sha256"] = digest.hexdigest()
                 outcome["size_bytes"] = downloaded
-                check_payload(temp_path, target.name)
+                check_payload(
+                    temp_path, target.name, require_final_newline=not size_verified
+                )
                 if expected_format is not None:
                     validate_payload_signature(temp_path, expected_format)
                 temp_path.replace(target)

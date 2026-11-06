@@ -7,6 +7,12 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+### Corrigido
+
+- `download_with_manifest` (sync e async) não aceita mais como completo um download truncado quando o servidor responde sem `Content-Length` (`Transfer-Encoding: chunked`). O tamanho esperado passa a vir do total do `Content-Range` (qualquer diferença é erro) ou, na falta dele, do sufixo de um `ETag` no formato `"<mtime>-<tamanho>"` (heurístico: só um download menor conta como truncado). A transferência incompleta é retentada com retomada por `Range`; esgotadas as tentativas, levanta o novo `IncompleteDownloadError` (subclasse de `StorageError`) sem promover o arquivo nem gravar o manifest. Respostas com `Content-Encoding` diferente de `identity` não são verificadas.
+
+- `check_payload(..., require_final_newline=True)` rejeita `.csv`, `.tsv` e `.txt` que não terminam em quebra de linha (`CorruptPayloadError`). O `download_with_manifest` ativa a regra só quando não foi possível verificar o tamanho do download (sem `Content-Length`, `Content-Range` nem `ETag` com tamanho); o padrão de `check_payload` não muda. `.tsv` passa a ser tratado como arquivo de dados (rejeita página HTML).
+
 ## [0.16.1] - 2026-11-06
 
 ### Corrigido
