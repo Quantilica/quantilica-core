@@ -7,6 +7,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+## [0.16.1] - 2026-11-06
+
 ### Corrigido
 
 - `decompress_archive` não escolhe mais, entre vários arquivos extraídos, lock files do Office (`~$*`), checksums (`md5_*`), `Thumbs.db`, `.DS_Store` nem entradas de `__MACOSX/`. A escolha nos demais casos não muda.
