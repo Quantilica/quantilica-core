@@ -7,6 +7,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+## [0.18.0] - 2026-11-08
+
 ### Adicionado
 
 - `quantilica.core.docs`: verificação da norma de documentação dos dados dos fetchers. `check_fetcher_docs(docs_dir, datasets, source_id)` devolve os problemas (erros e avisos) da pasta `docs/` de um fetcher e `assert_fetcher_docs(...)` serve de teste-padrão no pytest: página por dataset e vice-versa, cabeçalho YAML no esquema da norma, as nove seções na ordem, esquema de referência (`<id>.schema.json`), partições coerentes e dicionário de variáveis que cobre exatamente as colunas do esquema. `parse_dataset_page`, `render_ficha` e `update_ficha` leem o cabeçalho e regeneram a ficha técnica; `schema_from_lake` e `write_schema` geram o esquema de referência lendo só os rodapés dos Parquet do lake.
