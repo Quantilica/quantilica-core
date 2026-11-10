@@ -18,6 +18,7 @@ from typing import Any, Literal, get_args
 
 __all__ = [
     "CADENCIAS",
+    "REDISTRIBUICOES",
     "REGISTRY_VERSION",
     "Cadencia",
     "DatasetEntry",
@@ -26,10 +27,14 @@ __all__ = [
     "RegistryError",
     "build_registry",
     "check_unique",
+    "is_redistributable",
     "resolve_alias",
 ]
 
-#: Versão do formato do ``registry.json``.
+#: Versão do formato do ``registry.json``. Só sobe em mudança incompatível
+#: (campo removido, renomeado ou com outro significado). Campo novo e opcional,
+#: que o leitor antigo pode ignorar e que o leitor novo aceita ausente, é
+#: aditivo e NÃO sobe a versão (caso de ``redistribuicao`` e ``restricao_nota``).
 REGISTRY_VERSION = 1
 
 #: Vocabulário de cadência esperada (o mesmo de ``expected_cadence`` nos
@@ -38,6 +43,10 @@ REGISTRY_VERSION = 1
 #: declara que não há prazo de frescor, diferente de ``None`` (não informado).
 Cadencia = Literal["daily", "weekly", "monthly", "quarterly", "yearly", "irregular"]
 CADENCIAS: tuple[str, ...] = get_args(Cadencia)
+
+#: Vocabulário de redistribuição dos dados da fonte. ``None`` = não avaliada.
+Redistribuicao = Literal["aberta", "restrita"]
+REDISTRIBUICOES: tuple[str, ...] = get_args(Redistribuicao)
 
 _ID_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 # Apelidos aceitam também o sublinhado dos nomes históricos (``bcb_microdados``).
@@ -70,6 +79,11 @@ class FetcherInfo:
         homepage: Página oficial da fonte (``http(s)://``).
         cadencia: Cadência esperada de atualização (ver :data:`CADENCIAS`).
         dominio: Domínio temático opcional (ex.: ``"economia"``).
+        redistribuicao: ``"aberta"`` ou ``"restrita"`` (ver
+            :data:`REDISTRIBUICOES`); ``None`` quando ainda não avaliada.
+            Fonte restrita roda para uso interno, mas não é exibida nem
+            oferecida para download (ver :func:`is_redistributable`).
+        restricao_nota: Motivo curto da marca de redistribuição (texto livre).
     """
 
     id: str
@@ -80,6 +94,8 @@ class FetcherInfo:
     homepage: str | None = None
     cadencia: Cadencia | None = None
     dominio: str | None = None
+    redistribuicao: Redistribuicao | None = None
+    restricao_nota: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.id, str) or not _ID_RE.match(self.id):
@@ -110,6 +126,7 @@ class FetcherInfo:
         _opt_text("licenca", self.licenca, self.id)
         _opt_text("dominio", self.dominio, self.id)
         _opt_text("homepage", self.homepage, self.id)
+        _opt_text("restricao_nota", self.restricao_nota, self.id)
         if self.homepage is not None and not self.homepage.startswith(
             ("http://", "https://")
         ):
@@ -121,6 +138,14 @@ class FetcherInfo:
             raise RegistryError(
                 f"FetcherInfo {self.id!r}: cadência {self.cadencia!r} desconhecida; "
                 f"aceitas: {', '.join(CADENCIAS)}"
+            )
+        if (
+            self.redistribuicao is not None
+            and self.redistribuicao not in REDISTRIBUICOES
+        ):
+            raise RegistryError(
+                f"FetcherInfo {self.id!r}: redistribuição {self.redistribuicao!r} "
+                f"desconhecida; aceitas: {', '.join(REDISTRIBUICOES)}"
             )
 
     @property
@@ -204,6 +229,14 @@ class GroupInfo:
             "name": self.name,
             "entries": [e.to_dict() for e in self.entries],
         }
+
+
+def is_redistributable(info: FetcherInfo) -> bool:
+    """False só quando a fonte está marcada como ``restrita``.
+
+    Fonte não avaliada (``None``) ou ``aberta`` continua redistribuível.
+    """
+    return info.redistribuicao != "restrita"
 
 
 def resolve_alias(infos: Iterable[FetcherInfo], nome: str) -> FetcherInfo | None:

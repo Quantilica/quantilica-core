@@ -8,12 +8,14 @@ import pytest
 
 from quantilica.core.registry import (
     CADENCIAS,
+    REDISTRIBUICOES,
     DatasetEntry,
     FetcherInfo,
     GroupInfo,
     RegistryError,
     build_registry,
     check_unique,
+    is_redistributable,
     resolve_alias,
 )
 
@@ -81,6 +83,8 @@ def test_ida_e_volta_json():
         "homepage",
         "cadencia",
         "dominio",
+        "redistribuicao",
+        "restricao_nota",
     ]
 
 
@@ -141,3 +145,29 @@ def test_cadencia_irregular_e_aceita():
         FetcherInfo(id="loterias", nome="Loterias", cadencia="irregular").cadencia
         == "irregular"
     )
+
+
+def test_redistribuicao_vocabulario_e_validacao():
+    assert REDISTRIBUICOES == ("aberta", "restrita")
+    assert _info().redistribuicao is None
+    for valor in REDISTRIBUICOES:
+        assert _info(redistribuicao=valor).redistribuicao == valor
+    with pytest.raises(RegistryError, match="redistribuição"):
+        _info(redistribuicao="fechada")
+    with pytest.raises(RegistryError, match="restricao_nota"):
+        _info(restricao_nota=" ")
+
+
+def test_is_redistributable():
+    assert is_redistributable(_info()) is True
+    assert is_redistributable(_info(redistribuicao="aberta")) is True
+    assert is_redistributable(_info(redistribuicao="restrita")) is False
+
+
+def test_redistribuicao_ida_e_volta_e_dict_antigo():
+    info = _info(redistribuicao="restrita", restricao_nota="termos vedam coleta")
+    data = json.loads(json.dumps(info.to_dict()))
+    assert data["redistribuicao"] == "restrita"
+    assert FetcherInfo.from_dict(data) == info
+    antigo = {"id": "x", "nome": "X", "aliases": []}
+    assert FetcherInfo.from_dict(antigo).redistribuicao is None

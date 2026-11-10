@@ -7,6 +7,14 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+### Adicionado
+
+- `FetcherInfo.redistribuicao` (`"aberta"` | `"restrita"` | `None` = não
+  avaliada, vocabulário `REDISTRIBUICOES`) e `restricao_nota` (motivo curto).
+  `to_dict()`/`from_dict()` os incluem; dicionário antigo, sem os campos, segue
+  válido. `REGISTRY_VERSION` continua 1: campo opcional novo é aditivo.
+- `is_redistributable(info)`: `False` só para fonte marcada como `restrita`.
+
 ## [0.19.0] - 2026-11-10
 
 ### Adicionado
