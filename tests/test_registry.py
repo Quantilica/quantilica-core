@@ -131,3 +131,13 @@ def test_dataset_entry_e_group():
     assert DatasetEntry.from_dict({**d, "extra": 1}) == e
     g = GroupInfo("g", [e])
     assert g.to_dict() == {"name": "g", "entries": [d]}
+
+
+def test_cadencia_irregular_e_aceita():
+    from quantilica.core.registry import CADENCIAS, FetcherInfo
+
+    assert "irregular" in CADENCIAS
+    assert (
+        FetcherInfo(id="loterias", nome="Loterias", cadencia="irregular").cadencia
+        == "irregular"
+    )

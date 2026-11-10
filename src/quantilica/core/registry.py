@@ -33,8 +33,10 @@ __all__ = [
 REGISTRY_VERSION = 1
 
 #: Vocabulário de cadência esperada (o mesmo de ``expected_cadence`` nos
-#: manifestos e do cálculo de atraso em ``quantilica manifests``).
-Cadencia = Literal["daily", "weekly", "monthly", "quarterly", "yearly"]
+#: manifestos e do cálculo de atraso em ``quantilica manifests``), mais
+#: ``irregular`` para fonte sem periodicidade fixa (sorteios, cargas avulsas):
+#: declara que não há prazo de frescor, diferente de ``None`` (não informado).
+Cadencia = Literal["daily", "weekly", "monthly", "quarterly", "yearly", "irregular"]
 CADENCIAS: tuple[str, ...] = get_args(Cadencia)
 
 _ID_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
