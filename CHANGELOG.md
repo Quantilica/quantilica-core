@@ -7,6 +7,15 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+### Adicionado
+
+- `quantilica.core.registry`: modelo do registro de fetchers. `FetcherInfo`
+  (id canônico, apelidos, nome, órgão, licença, página, cadência, domínio) com
+  validação e `to_dict()`/`from_dict()`, as dataclasses de catálogo
+  `DatasetEntry` e `GroupInfo` (união dos campos das cópias nos pacotes) e as
+  funções puras `resolve_alias`, `check_unique` e `build_registry`
+  (`{"version": 1, "fetchers": [...]}`, ordenado por id).
+
 ## [0.18.0] - 2026-11-08
 
 ### Adicionado
