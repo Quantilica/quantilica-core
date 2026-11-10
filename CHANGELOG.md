@@ -7,6 +7,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+## [0.19.0] - 2026-11-10
+
 ### Adicionado
 
 - `quantilica.core.registry`: modelo do registro de fetchers. `FetcherInfo`
