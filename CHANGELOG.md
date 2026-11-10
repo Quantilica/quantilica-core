@@ -7,6 +7,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+## [0.20.0] - 2026-11-10
+
 ### Adicionado
 
 - `FetcherInfo.redistribuicao` (`"aberta"` | `"restrita"` | `None` = não
