@@ -30,7 +30,7 @@ jobs:
               "quantilica-analytics",
               "quantilica-cli",
               "quantilica-catalog",
-              "sidra-fetcher",
+              "ibge-sidra-fetcher",
               "sidra-sql",
               "comex-fetcher",
               "datasus-fetcher",
@@ -51,13 +51,13 @@ jobs:
           quantilica-analytics = { workspace = true }
           quantilica-cli = { workspace = true }
           quantilica-catalog = { workspace = true }
-          sidra-fetcher = { workspace = true }
+          ibge-sidra-fetcher = { workspace = true }
           sidra-sql = { workspace = true }
           bcb-sgs-fetcher = { workspace = true }
           bcb-sgs-sql = { workspace = true }
           TOML
           for repo in quantilica-core quantilica-analytics quantilica-cli quantilica-catalog \
-              sidra-fetcher sidra-sql comex-fetcher datasus-fetcher inmet-fetcher pdet-fetcher \
+              ibge-sidra-fetcher sidra-sql comex-fetcher datasus-fetcher inmet-fetcher pdet-fetcher \
               rtn-fetcher tesouro-direto-fetcher bcb-sgs-fetcher bcb-sgs-sql anp-fetcher \
               anac-fetcher inep-fetcher rfb-cnpj-fetcher; do
             git clone --depth 1 "https://github.com/Quantilica/$repo.git"
@@ -92,7 +92,7 @@ jobs:
           cd ws
           FAILED=""
           for p in quantilica-core quantilica-analytics quantilica-cli quantilica-catalog \
-              sidra-fetcher sidra-sql comex-fetcher datasus-fetcher inmet-fetcher pdet-fetcher \
+              ibge-sidra-fetcher sidra-sql comex-fetcher datasus-fetcher inmet-fetcher pdet-fetcher \
               rtn-fetcher tesouro-direto-fetcher bcb-sgs-fetcher bcb-sgs-sql anp-fetcher \
               anac-fetcher inep-fetcher rfb-cnpj-fetcher; do
             echo "::group::$p"

@@ -38,7 +38,7 @@ manifest = DownloadManifest.from_file(
     dataset_id="sidra-1234",
     url="https://...",
     file_path=stat.path,
-    producer="sidra-fetcher",
+    producer="ibge-sidra-fetcher",
 )
 manifest.write_json(stat.path.with_suffix(".manifest.json"))
 ```

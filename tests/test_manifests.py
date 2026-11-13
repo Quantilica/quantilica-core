@@ -26,7 +26,7 @@ def test_download_manifest_from_content():
         resource_id="7060",
         url="https://example.test/data.json",
         content=b"abc",
-        producer="sidra-fetcher",
+        producer="ibge-sidra-fetcher",
         producer_version="0.1.0",
         metadata={"format": "json"},
     )
