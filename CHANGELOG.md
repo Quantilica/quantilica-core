@@ -7,6 +7,28 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+### Adicionado
+
+- `quantilica.core.registry`: registro v2, com três camadas.
+  `IdentidadePacote` (distribuição, módulo, repositório, entry points,
+  `source_id`, versão: derivada dos metadados da distribuição, nunca
+  declarada); `RegistroEcossistema` e `Renome` (fatos do ecossistema:
+  `docs_pasta`, `vitrine`, `ci_integracao`, `json_leve`, `mascote`,
+  `health_url` e `historico` de renomes); `carrega_registro_ecossistema(path)`
+  valida o `registro.toml` (vocabulário `DOCS_PASTAS`, URL, data ISO, id fora do
+  export é erro); `check_identidade` aponta distribuição fora da regra
+  `<id>-fetcher` que o `historico` não explica; `registry_sha256` e o campo
+  `sha256` do registro.
+- `build_registry(infos, identidades=None, ecossistema=None, extras=None)` junta
+  as camadas, ordena por id e calcula o `sha256` do conteúdo. `FetcherInfo` não
+  muda.
+
+### Alterado
+
+- `REGISTRY_VERSION` sobe para 2. Os campos da versão 1 mantêm nome e formato; a
+  versão 2 só acrescenta (campos novos e `sha256`). Leitor que exige
+  `version == 1` precisa aceitar 2.
+
 ## [0.20.0] - 2026-11-10
 
 ### Adicionado
