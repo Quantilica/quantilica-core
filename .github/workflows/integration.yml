@@ -31,18 +31,20 @@ jobs:
               "quantilica-analytics",
               "quantilica-cli",
               "quantilica-catalog",
-              "ibge-sidra-fetcher",
+              # >>> registro:membros (gerado por infra/registry_build.py --listas; não editar)
+              "anac-fetcher",
+              "anp-fetcher",
+              "bcb-sgs-fetcher",
               "comex-fetcher",
               "datasus-fetcher",
+              "ibge-sidra-fetcher",
+              "inep-fetcher",
               "inmet-fetcher",
               "pdet-fetcher",
+              "rfb-cnpj-fetcher",
               "rtn-fetcher",
               "tesouro-direto-fetcher",
-              "bcb-sgs-fetcher",
-              "anp-fetcher",
-              "anac-fetcher",
-              "inep-fetcher",
-              "rfb-cnpj-fetcher",
+              # <<< registro
           ]
 
           [tool.uv.sources]
@@ -53,10 +55,24 @@ jobs:
           ibge-sidra-fetcher = { workspace = true }
           bcb-sgs-fetcher = { workspace = true }
           TOML
+          FETCHERS=(
+            # >>> registro:clone (gerado por infra/registry_build.py --listas; não editar)
+            anac-fetcher
+            anp-fetcher
+            bcb-sgs-fetcher
+            comex-fetcher
+            datasus-fetcher
+            ibge-sidra-fetcher
+            inep-fetcher
+            inmet-fetcher
+            pdet-fetcher
+            rfb-cnpj-fetcher
+            rtn-fetcher
+            tesouro-direto-fetcher
+            # <<< registro
+          )
           for repo in quantilica-core quantilica-analytics quantilica-cli quantilica-catalog \
-              ibge-sidra-fetcher comex-fetcher datasus-fetcher inmet-fetcher pdet-fetcher \
-              rtn-fetcher tesouro-direto-fetcher bcb-sgs-fetcher anp-fetcher \
-              anac-fetcher inep-fetcher rfb-cnpj-fetcher; do
+              "${FETCHERS[@]}"; do
             git clone --depth 1 "https://github.com/Quantilica/$repo.git"
           done
 
@@ -88,10 +104,24 @@ jobs:
         run: |
           cd ws
           FAILED=""
+          FETCHERS=(
+            # >>> registro:testes (gerado por infra/registry_build.py --listas; não editar)
+            anac-fetcher
+            anp-fetcher
+            bcb-sgs-fetcher
+            comex-fetcher
+            datasus-fetcher
+            ibge-sidra-fetcher
+            inep-fetcher
+            inmet-fetcher
+            pdet-fetcher
+            rfb-cnpj-fetcher
+            rtn-fetcher
+            tesouro-direto-fetcher
+            # <<< registro
+          )
           for p in quantilica-core quantilica-analytics quantilica-cli quantilica-catalog \
-              ibge-sidra-fetcher comex-fetcher datasus-fetcher inmet-fetcher pdet-fetcher \
-              rtn-fetcher tesouro-direto-fetcher bcb-sgs-fetcher anp-fetcher \
-              anac-fetcher inep-fetcher rfb-cnpj-fetcher; do
+              "${FETCHERS[@]}"; do
             echo "::group::$p"
             if ! uv run --no-sync --package "$p" pytest "$p/tests" -q; then
               FAILED="$FAILED $p"
