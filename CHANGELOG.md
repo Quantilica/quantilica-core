@@ -7,6 +7,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+## [0.21.0] - 2026-11-14
+
 ### Adicionado
 
 - `quantilica.core.registry`: registro v2, com três camadas.
