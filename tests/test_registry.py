@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -421,3 +422,31 @@ def test_check_identidade_regra_e_historico(tmp_path):
     assert len(check_identidade(infos, ident, eco)) == 1
     # sem distribuição conhecida não há o que checar
     assert check_identidade([_info("zed")], {}) == []
+
+
+def test_sha256_golden_do_json_canonico():
+    """Trava o formato canônico: mudar a serialização muda o hash publicado."""
+    doc = {
+        "version": 2,
+        "fetchers": [
+            {
+                "id": "anp",
+                "nome": "ANP – Dados",
+                "aliases": ["a"],
+                "vitrine": True,
+                "historico": [],
+            }  # fmt: skip
+        ],
+    }
+    canon = (
+        '{"fetchers":[{"aliases":["a"],"historico":[],"id":"anp",'
+        '"nome":"ANP – Dados","vitrine":true}],"version":2}'
+    )
+    assert hashlib.sha256(canon.encode()).hexdigest() == (
+        "f2ec0f20bdda37e4ce7b1fc0cdc7ff40407fa614aee4b8210e05248aed818537"
+    )
+    assert registry_sha256(doc) == (
+        "f2ec0f20bdda37e4ce7b1fc0cdc7ff40407fa614aee4b8210e05248aed818537"
+    )
+    # o campo sha256 do próprio documento não entra no hash
+    assert registry_sha256({**doc, "sha256": "x"}) == registry_sha256(doc)
