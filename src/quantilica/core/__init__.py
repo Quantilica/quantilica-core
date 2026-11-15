@@ -12,7 +12,7 @@ from .exceptions import (
     InvalidPayloadSignatureError,
     TooManyRedirects,
 )
-from .files import decompress_archive
+from .files import decompress_archive, extracted_archive
 from .ftp import parse_ftp_list_line
 from .http import (
     AsyncHttpClient,
@@ -107,6 +107,7 @@ __all__ = [
     "converter_inventory",
     "dataset_lock",
     "decompress_archive",
+    "extracted_archive",
     "encode_partition_value",
     "expected_format_for_path",
     "file_key",

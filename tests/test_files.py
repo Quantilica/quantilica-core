@@ -1,4 +1,7 @@
+import shutil
+import subprocess
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -10,6 +13,7 @@ from quantilica.core.files import (
     decompress_archive,
     ensure_dir,
     ensure_parent,
+    extracted_archive,
     is_complete_file,
     sha256_bytes,
     sha256_file,
@@ -95,6 +99,11 @@ def test_check_free_space_never_creates_target_without_suffix(tmp_path):
 # ---------------------------------------------------------------------------
 # decompress_archive
 # ---------------------------------------------------------------------------
+
+
+# O caminho legado (``output_dir=None``) emite DeprecationWarning de propósito;
+# os testes antigos o exercitam sem tratá-lo como falha.
+pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 
 
 def _make_zip(tmp_path: Path, members: dict[str, bytes]) -> Path:
@@ -359,3 +368,201 @@ def test_decompress_archive_so_lixo_devolve_diretorio(tmp_path):
     archive = _make_zip(tmp_path, {"Thumbs.db": b"x", "md5_a.txt": b"x"})
     out = tmp_path / "out"
     assert decompress_archive(archive, out) == out
+
+
+# ---------------------------------------------------------------------------
+# extracted_archive (extração com dono) e aviso de descontinuação
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def tmpdir_isolado(tmp_path, monkeypatch):
+    """Aponta TMPDIR para uma pasta vazia (nada vaza para o /tmp real)."""
+    pasta = tmp_path / "tmpdir"
+    pasta.mkdir()
+    monkeypatch.setenv("TMPDIR", str(pasta))
+    monkeypatch.setattr(tempfile, "tempdir", None)
+    return pasta
+
+
+def _sobras(pasta: Path) -> list[Path]:
+    return sorted(pasta.glob("quantilica_extract_*"))
+
+
+def test_extracted_archive_removes_root_on_success(tmp_path, tmpdir_isolado):
+    archive = _make_zip(tmp_path, {"a.csv": b"x\n1\n"})
+    with extracted_archive(archive) as path:
+        assert path.read_bytes() == b"x\n1\n"
+        assert _sobras(tmpdir_isolado)
+    assert not path.exists()
+    assert _sobras(tmpdir_isolado) == []
+
+
+def test_extracted_archive_removes_root_when_body_raises(tmp_path, tmpdir_isolado):
+    archive = _make_zip(tmp_path, {"a.csv": b"x\n1\n"})
+    with pytest.raises(ValueError, match="falha do chamador"):
+        with extracted_archive(archive):
+            raise ValueError("falha do chamador")
+    assert _sobras(tmpdir_isolado) == []
+
+
+def test_extracted_archive_removes_root_when_extraction_fails(tmp_path, tmpdir_isolado):
+    bogus = tmp_path / "bogus.zip"
+    bogus.write_bytes(b"not a zip")
+    with pytest.raises(StorageError):
+        with extracted_archive(bogus):
+            pass  # pragma: no cover
+    assert _sobras(tmpdir_isolado) == []
+
+
+def test_extracted_archive_missing_archive_creates_nothing(tmp_path, tmpdir_isolado):
+    with pytest.raises(StorageError, match="Archive not found"):
+        with extracted_archive(tmp_path / "missing.zip"):
+            pass  # pragma: no cover
+    assert _sobras(tmpdir_isolado) == []
+
+
+def test_extracted_archive_zip_with_subfolder_leaves_no_root(tmp_path, tmpdir_isolado):
+    """Regressão: com subpasta o resultado fica aninhado e a raiz vazava.
+
+    O chamador antigo fazia ``rmtree(resultado.parent)`` e a raiz
+    ``quantilica_extract_*`` sobrava.
+    """
+    archive = _make_zip(tmp_path, {"pasta/interna/dados.csv": b"x\n1\n"})
+    with extracted_archive(archive, target_extensions=(".csv",)) as path:
+        assert path.name == "dados.csv"
+        assert path.parent.name == "interna"
+        assert path.parent != _sobras(tmpdir_isolado)[0]
+    assert _sobras(tmpdir_isolado) == []
+    assert list(tmpdir_isolado.iterdir()) == []
+
+
+def test_legacy_parent_rmtree_leaks_root_with_subfolder(tmp_path, tmpdir_isolado):
+    """Documenta o vazamento do uso antigo (e que o gerenciador o evita)."""
+    archive = _make_zip(tmp_path, {"pasta/dados.csv": b"x\n1\n"})
+    inner = decompress_archive(archive)
+    shutil.rmtree(inner.parent)
+    assert len(_sobras(tmpdir_isolado)) == 1
+
+
+def test_extracted_archive_dir_holds_the_root(tmp_path):
+    archive = _make_zip(tmp_path, {"a.csv": b"x\n1\n"})
+    base = tmp_path / "novo" / "base"
+    with extracted_archive(archive, dir=base) as path:
+        assert path.parent.parent == base
+        assert path.parent.name.startswith("quantilica_extract_")
+    assert base.is_dir()
+    assert list(base.iterdir()) == []
+
+
+def test_extracted_archive_yields_root_when_no_unique_file(tmp_path, tmpdir_isolado):
+    archive = _make_zip(tmp_path, {"a.bin": b"1", "b.bin": b"2"})
+    with extracted_archive(archive) as path:
+        assert path.is_dir()
+        assert path.name.startswith("quantilica_extract_")
+    assert not path.exists()
+
+
+def test_extracted_archive_removes_readonly_entries(tmp_path, tmpdir_isolado):
+    archive = _make_zip(tmp_path, {"sub/dados.csv": b"x\n1\n"})
+    with extracted_archive(archive, target_extensions=(".csv",)) as path:
+        path.chmod(0o444)
+        path.parent.chmod(0o555)
+    assert _sobras(tmpdir_isolado) == []
+
+
+def test_extracted_archive_removal_failure_is_warning_not_exception(
+    tmp_path, monkeypatch
+):
+    import quantilica.core.files as files_mod
+
+    archive = _make_zip(tmp_path, {"a.csv": b"x\n1\n"})
+
+    def rmtree_quebrado(path, onexc=None, **kwargs):
+        raise OSError("disco cheio de rancor")
+
+    monkeypatch.setattr(files_mod.shutil, "rmtree", rmtree_quebrado)
+    with pytest.warns(RuntimeWarning, match="Could not remove"):
+        with extracted_archive(archive) as path:
+            assert path.exists()
+    monkeypatch.undo()
+    shutil.rmtree(path.parent, ignore_errors=True)
+
+
+def test_extracted_archive_removal_failure_does_not_mask_original(
+    tmp_path, monkeypatch
+):
+    import quantilica.core.files as files_mod
+
+    archive = _make_zip(tmp_path, {"a.csv": b"x\n1\n"})
+    raiz: list[Path] = []
+
+    def rmtree_quebrado(path, onexc=None, **kwargs):
+        raiz.append(Path(path))
+        raise OSError("sem permissão")
+
+    monkeypatch.setattr(files_mod.shutil, "rmtree", rmtree_quebrado)
+    with pytest.warns(RuntimeWarning, match="Could not remove"):
+        with pytest.raises(ValueError, match="original"):
+            with extracted_archive(archive):
+                raise ValueError("original")
+    monkeypatch.undo()
+    shutil.rmtree(raiz[0], ignore_errors=True)
+
+
+def test_extracted_archive_explicit_output_dir_is_never_removed(tmp_path):
+    """``decompress_archive`` com ``output_dir`` não remove nem avisa."""
+    archive = _make_zip(tmp_path, {"sub/a.csv": b"x\n1\n"})
+    out_dir = tmp_path / "out"
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        result = decompress_archive(archive, output_dir=out_dir)
+    assert result.read_bytes() == b"x\n1\n"
+    assert out_dir.is_dir()
+    assert (out_dir / "sub" / "a.csv").exists()
+
+
+def test_decompress_archive_without_output_dir_warns_deprecation(
+    tmp_path, tmpdir_isolado
+):
+    archive = _make_zip(tmp_path, {"a.csv": b"x\n1\n"})
+    with pytest.warns(DeprecationWarning, match="extracted_archive") as record:
+        out = decompress_archive(archive)
+    assert record[0].filename == __file__
+    shutil.rmtree(out.parent)
+
+
+def test_decompress_archive_failure_without_output_dir_removes_temp(
+    tmp_path, tmpdir_isolado
+):
+    bogus = tmp_path / "bogus.zip"
+    bogus.write_bytes(b"not a zip")
+    with pytest.raises(StorageError):
+        decompress_archive(bogus)
+    assert _sobras(tmpdir_isolado) == []
+
+
+def test_extracted_archive_exported_from_package_root():
+    import quantilica.core
+
+    assert quantilica.core.extracted_archive is extracted_archive
+    assert "extracted_archive" in quantilica.core.__all__
+
+
+@pytest.mark.skipif(shutil.which("7z") is None, reason="binário 7z ausente no PATH")
+def test_extracted_archive_real_7z_removes_root(tmp_path, tmpdir_isolado):
+    fonte = tmp_path / "fonte"
+    fonte.mkdir()
+    (fonte / "dados.csv").write_bytes(b"x\n1\n")
+    archive = tmp_path / "dados.7z"
+    subprocess.run(
+        ["7z", "a", str(archive), str(fonte / "dados.csv")],
+        check=True,
+        capture_output=True,
+    )
+    with extracted_archive(archive, target_extensions=(".csv",)) as path:
+        assert path.name == "dados.csv"
+        assert path.read_bytes() == b"x\n1\n"
+    assert _sobras(tmpdir_isolado) == []

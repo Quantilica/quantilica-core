@@ -7,6 +7,25 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+### Adicionado
+
+- `quantilica.core.files.extracted_archive(archive_path, *, target_extensions=None, dir=None)`
+  (também em `quantilica.core`): gerenciador de contexto que extrai para
+  `mkdtemp(prefix="quantilica_extract_")` (em `dir` ou `TMPDIR`), devolve o
+  mesmo caminho que `decompress_archive` e **sempre** remove a raiz da extração
+  (sucesso, exceção ou interrupção), subpastas incluídas. A remoção é robusta:
+  entrada somente leitura é liberada e tentada de novo, e o que não sair vira
+  `RuntimeWarning`, nunca uma exceção que mascara a original.
+
+### Alterado
+
+- `decompress_archive(output_dir=None)` passa a emitir `DeprecationWarning`
+  quando ela mesma cria a pasta temporária (o chamador é quem a remove, e a raiz
+  não é `resultado.parent` quando o arquivo tem subpastas: `rmtree(inner.parent)`
+  deixava `quantilica_extract_*` para trás). Se a extração falha nesse caminho,
+  a pasta criada é removida antes de o erro subir. Com `output_dir` explícito
+  nada muda: a pasta continua do chamador e nunca é removida.
+
 ## [0.21.0] - 2026-11-14
 
 ### Adicionado

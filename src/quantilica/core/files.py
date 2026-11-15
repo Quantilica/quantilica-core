@@ -5,11 +5,14 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import stat
 import subprocess
 import tarfile
 import tempfile
+import warnings
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO
 
@@ -457,13 +460,60 @@ def _is_within(base: Path, candidate: Path) -> bool:
     return True
 
 
-def _temp_extraction_dir() -> Path:
+_EXTRACT_PREFIX = "quantilica_extract_"
+
+
+def _temp_extraction_dir(parent: Path | str | None = None) -> Path:
     """Create and return a clean temporary directory for extraction.
+
+    Args:
+        parent: Directory that will hold the new folder. ``None`` uses the
+            system temporary directory (``TMPDIR``). Created if missing.
 
     Returns:
         Path: The temporary directory path.
     """
-    return Path(tempfile.mkdtemp(prefix="quantilica_extract_"))
+    if parent is not None:
+        parent = Path(parent).expanduser()
+        parent.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix=_EXTRACT_PREFIX, dir=parent))
+
+
+def _rmtree_robust(path: Path) -> None:
+    """Remove ``path`` recursively without ever raising.
+
+    Read-only entries are made writable and retried. Any failure that remains
+    becomes a ``RuntimeWarning`` so cleanup never masks an exception that is
+    already propagating.
+
+    Args:
+        path: Directory to remove.
+    """
+
+    def _on_error(func: Callable[..., object], name: str, exc: BaseException) -> None:
+        if isinstance(exc, FileNotFoundError):
+            return
+        try:
+            target = Path(name)
+            for node in (target, target.parent):
+                if node.exists() and not node.is_symlink():
+                    node.chmod(node.stat().st_mode | stat.S_IRWXU)
+            func(name)
+        except OSError as retry_exc:
+            warnings.warn(
+                f"Could not remove extraction path {name}: {retry_exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+    try:
+        shutil.rmtree(path, onexc=_on_error)
+    except OSError as exc:  # pragma: no cover - defensive
+        warnings.warn(
+            f"Could not remove extraction directory {path}: {exc}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
 
 def _resolve_output_dir(output_dir: Path | str | None) -> Path:
@@ -607,51 +657,27 @@ def _needs_seven_zip(archive: Path, suffix: str) -> bool:
     return suffix not in ("", ".tar")
 
 
-def decompress_archive(
-    archive_path: Path | str,
-    output_dir: Path | str | None = None,
-    target_extensions: tuple[str, ...] | list[str] | None = None,
+def _extract_into(
+    archive: Path,
+    dest: Path,
+    target_extensions: tuple[str, ...] | list[str] | None,
 ) -> Path:
-    """Extract an archive and return the extracted file or destination.
-
-    Supports the formats the stdlib handles natively (``.zip``; ``.tar``,
-    ``.tar.gz``/``.tgz``, ``.tar.bz2``, ``.tar.xz``) and falls back to the
-    external ``7z`` binary for ``.7z``/``.rar`` and other unknown formats.
-    ZIP members are checked against the destination to prevent Zip Slip path
-    traversal; TAR uses ``filter='data'`` on Python >= 3.12.
-
-    Resolution rules when ``target_extensions`` is not given:
-
-    - A single extracted file is returned directly.
-    - Multiple extracted files: the first matching a common data extension
-      (``.csv``, ``.xls``, ``.xlsx``, ``.json``, ...) if any, otherwise the
-      destination directory itself. Office lock files (``~$*``), ``md5_*``
-      checksums, ``Thumbs.db``, ``.DS_Store`` and ``__MACOSX/`` entries are
-      never chosen.
+    """Extract ``archive`` into the existing ``dest`` and pick the result.
 
     Args:
-        archive_path: Path to the archive to decompress.
-        output_dir: Destination directory. When ``None``, a clean temporary
-            directory is created (caller owns removal).
-        target_extensions: Optional sequence of extensions (lower-cased, with
-            dot, e.g. ``('.csv', '.xls')``) — the first extracted file whose
-            suffix matches (case-insensitive) is returned.
+        archive: Existing archive file.
+        dest: Existing destination directory.
+        target_extensions: Optional extensions filter (see
+            :func:`decompress_archive`).
 
     Returns:
-        Path: The chosen extracted file, or the destination directory when
-        no unique file can be determined.
+        Path: The chosen extracted file, or ``dest``.
 
     Raises:
-        StorageError: If the archive does not exist, its format has no
-            available handler (including missing ``7z`` binary), extraction
-            fails, or produces no files.
+        StorageError: On unsupported format, missing ``7z``, failed extraction
+            or an archive without files.
     """
-    archive = Path(archive_path).expanduser()
-    if not archive.is_file():
-        raise StorageError(f"Archive not found: {archive}")
-    dest = _resolve_output_dir(output_dir)
     suffix = archive.suffix.lower()
-
     if suffix == _ZIP_SUFFIX:
         extracted = _safe_zip_extract(archive, dest)
     elif archive.name.lower().endswith(_TAR_SUFFIXES) or suffix == ".tar":
@@ -671,6 +697,135 @@ def decompress_archive(
     if not extracted:
         raise StorageError(f"Archive produced no files: {archive}")
     return _pick_result(extracted, dest, target_extensions)
+
+
+def _require_archive(archive_path: Path | str) -> Path:
+    """Return the archive path, or raise if it is not an existing file."""
+    archive = Path(archive_path).expanduser()
+    if not archive.is_file():
+        raise StorageError(f"Archive not found: {archive}")
+    return archive
+
+
+def decompress_archive(
+    archive_path: Path | str,
+    output_dir: Path | str | None = None,
+    target_extensions: tuple[str, ...] | list[str] | None = None,
+) -> Path:
+    """Extract an archive and return the extracted file or destination.
+
+    .. warning::
+       With ``output_dir=None`` this function creates a temporary directory
+       (``quantilica_extract_*``) that **the caller must remove**, and the
+       directory to remove is the *root* of the extraction, not the parent of
+       the returned file (an archive with subfolders returns a nested path).
+       Forgetting it leaks the extracted data. That form is deprecated and
+       emits :class:`DeprecationWarning`; use :func:`extracted_archive`,
+       which always removes the root. An explicit ``output_dir`` is never
+       removed.
+
+    Supports the formats the stdlib handles natively (``.zip``; ``.tar``,
+    ``.tar.gz``/``.tgz``, ``.tar.bz2``, ``.tar.xz``) and falls back to the
+    external ``7z`` binary for ``.7z``/``.rar`` and other unknown formats.
+    ZIP members are checked against the destination to prevent Zip Slip path
+    traversal; TAR uses ``filter='data'`` on Python >= 3.12.
+
+    Resolution rules when ``target_extensions`` is not given:
+
+    - A single extracted file is returned directly.
+    - Multiple extracted files: the first matching a common data extension
+      (``.csv``, ``.xls``, ``.xlsx``, ``.json``, ...) if any, otherwise the
+      destination directory itself. Office lock files (``~$*``), ``md5_*``
+      checksums, ``Thumbs.db``, ``.DS_Store`` and ``__MACOSX/`` entries are
+      never chosen.
+
+    Args:
+        archive_path: Path to the archive to decompress.
+        output_dir: Destination directory (owned and removed by the caller).
+            When ``None``, a clean temporary directory is created (deprecated:
+            the caller owns removal; if extraction itself fails the directory
+            is removed here before the error propagates).
+        target_extensions: Optional sequence of extensions (lower-cased, with
+            dot, e.g. ``('.csv', '.xls')``) — the first extracted file whose
+            suffix matches (case-insensitive) is returned.
+
+    Returns:
+        Path: The chosen extracted file, or the destination directory when
+        no unique file can be determined.
+
+    Raises:
+        StorageError: If the archive does not exist, its format has no
+            available handler (including missing ``7z`` binary), extraction
+            fails, or produces no files.
+    """
+    archive = _require_archive(archive_path)
+    if output_dir is not None:
+        return _extract_into(
+            archive, _resolve_output_dir(output_dir), target_extensions
+        )
+
+    warnings.warn(
+        "decompress_archive() without output_dir creates a temporary "
+        "directory that the caller must remove (its root is not "
+        "result.parent when the archive has subfolders); use "
+        "quantilica.core.files.extracted_archive(), which always removes it.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    dest = _temp_extraction_dir()
+    try:
+        return _extract_into(archive, dest, target_extensions)
+    except BaseException:
+        _rmtree_robust(dest)
+        raise
+
+
+@contextmanager
+def extracted_archive(
+    archive_path: Path | str,
+    *,
+    target_extensions: tuple[str, ...] | list[str] | None = None,
+    dir: Path | str | None = None,  # noqa: A002 - mirrors tempfile.mkdtemp
+) -> Iterator[Path]:
+    """Extract an archive into a temporary root that is always removed.
+
+    Context-manager form of :func:`decompress_archive` that owns the
+    extraction directory: it creates ``quantilica_extract_*`` (inside ``dir``
+    or ``TMPDIR``), extracts, yields the same path ``decompress_archive``
+    would return and, on exit (success, exception or ``KeyboardInterrupt``),
+    removes the whole root, subfolders included. The yielded path is only
+    valid inside the ``with`` block; read or copy what you need before
+    leaving it.
+
+    Removal never raises: read-only entries are made writable and retried, and
+    what still cannot be removed becomes a ``RuntimeWarning`` (a failure here
+    never masks the exception raised by the body).
+
+    Example:
+        >>> with extracted_archive(raw_zip, target_extensions=(".csv",)) as csv:
+        ...     frame = read_csv(csv)
+
+    Args:
+        archive_path: Path to the archive to decompress.
+        target_extensions: Optional extensions filter, as in
+            :func:`decompress_archive`.
+        dir: Directory that will hold the temporary root (created if missing).
+            ``None`` uses the system temporary directory.
+
+    Yields:
+        Path: The chosen extracted file, or the extraction root when no
+        unique file can be determined (same resolution as
+        :func:`decompress_archive`).
+
+    Raises:
+        StorageError: Same conditions as :func:`decompress_archive`.
+    """
+    archive = _require_archive(archive_path)
+    root = _temp_extraction_dir(dir)
+    try:
+        yield _extract_into(archive, root, target_extensions)
+    finally:
+        _rmtree_robust(root)
 
 
 def _is_junk_member(path: Path) -> bool:
