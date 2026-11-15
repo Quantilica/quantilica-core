@@ -7,6 +7,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+## [0.23.0] - 2026-11-15
+
 ### Adicionado
 
 - `HostPolicy` ganha token bucket, backoff de `429` por host e disjuntor.
