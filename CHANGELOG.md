@@ -7,6 +7,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+## [0.22.0] - 2026-11-14
+
 ### Adicionado
 
 - `quantilica.core.files.extracted_archive(archive_path, *, target_extensions=None, dir=None)`
