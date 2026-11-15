@@ -17,6 +17,16 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
   entrada somente leitura é liberada e tentada de novo, e o que não sair vira
   `RuntimeWarning`, nunca uma exceção que mascara a original.
 
+- `quantilica.core.files.remove_stale_atomic_temps(alvo, *, max_age_hours=None)`:
+  apaga `.<nome>.<8 aleatórios>.tmp` **do mesmo alvo** com `mtime` acima de N
+  horas (padrão 48 h; `QUANTILICA_TMP_MAX_AGE_HOURS` configura, `0` desliga).
+  É chamada antes de criar o `.tmp` em `write_stream_atomic`,
+  `write_bytes_atomic` (e `write_text_atomic`) e nos downloads de
+  `HttpClient`/`AsyncHttpClient`. Um `.tmp` recente (outro processo baixando o
+  mesmo arquivo), de outro alvo ou symlink nunca é tocado; falha ao remover vira
+  aviso no log, nunca erro do download. Cobre o resíduo de `timeout`/`SIGTERM`
+  que mata o download antes do `finally`.
+
 ### Alterado
 
 - `decompress_archive(output_dir=None)` passa a emitir `DeprecationWarning`

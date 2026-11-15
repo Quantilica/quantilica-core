@@ -31,6 +31,7 @@ from .files import (
     check_free_space,
     check_payload,
     ensure_parent,
+    remove_stale_atomic_temps,
     write_bytes_atomic,
 )
 from .logging import bind_context, get_logger, log_step
@@ -2228,6 +2229,7 @@ class AsyncHttpClient:
 def _open_atomic_temp(target: Path) -> tuple[int, Path]:
     """Create a temp file alongside ``target`` for atomic write."""
     ensure_parent(target)
+    remove_stale_atomic_temps(target)
     fd, raw_temp_path = tempfile.mkstemp(
         prefix=f".{target.name}.",
         suffix=".tmp",

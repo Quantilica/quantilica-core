@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
+import re
 import shutil
 import stat
 import subprocess
 import tarfile
 import tempfile
+import time
 import warnings
 import zipfile
 from collections.abc import Callable, Iterator
@@ -20,6 +23,16 @@ from .exceptions import CorruptPayloadError, EmptyPayloadError, StorageError
 
 DEFAULT_CHUNK_SIZE = 1024 * 1024
 DEFAULT_MIN_FREE_MARGIN = 100 * 1024 * 1024  # 100 MB
+
+STALE_TMP_ENV = "QUANTILICA_TMP_MAX_AGE_HOURS"
+"""Variável de ambiente com a idade mínima (em horas) de um ``.tmp`` órfão."""
+
+DEFAULT_STALE_TMP_HOURS = 48.0
+"""Idade padrão: acima do maior ``timeout`` dos jobs de sync do ecossistema."""
+
+_LOGGER = logging.getLogger(__name__)
+# ``tempfile.mkstemp`` sufixa 8 caracteres de [a-z0-9_] entre o nome e ``.tmp``.
+_MKSTEMP_RANDOM = r"[A-Za-z0-9_]{8}"
 
 _ZIP_SUFFIX = ".zip"
 _TAR_SUFFIXES = (
@@ -339,6 +352,95 @@ def check_payload(
             )
 
 
+def stale_tmp_max_age_hours(value: float | None = None) -> float | None:
+    """Resolve a idade mínima (em horas) para considerar um ``.tmp`` órfão.
+
+    Ordem: ``value`` explícito, variável ``QUANTILICA_TMP_MAX_AGE_HOURS`` e o
+    padrão de 48 h. Um valor menor ou igual a zero desliga a limpeza (devolve
+    ``None``): nunca vira "apague tudo", porque um ``.tmp`` recente pode ser de
+    outro processo baixando o mesmo arquivo. Valor inválido na variável cai no
+    padrão com aviso.
+    """
+    if value is None:
+        raw = os.environ.get(STALE_TMP_ENV)
+        if raw is None or not raw.strip():
+            return DEFAULT_STALE_TMP_HOURS
+        try:
+            value = float(raw)
+        except ValueError:
+            _LOGGER.warning(
+                "%s=%r inválido; usando o padrão de %s h",
+                STALE_TMP_ENV,
+                raw,
+                DEFAULT_STALE_TMP_HOURS,
+            )
+            return DEFAULT_STALE_TMP_HOURS
+    if value <= 0:
+        return None
+    return float(value)
+
+
+def remove_stale_atomic_temps(
+    target: str | os.PathLike[str],
+    *,
+    max_age_hours: float | None = None,
+    now: float | None = None,
+) -> list[Path]:
+    """Remove ``.tmp`` órfãos **do mesmo alvo** deixados por downloads mortos.
+
+    Os downloads atômicos criam ``.<nome>.<8 aleatórios>.tmp`` ao lado do alvo.
+    Se o processo morre sem passar pelo ``finally`` (``SIGTERM`` do ``timeout``,
+    ``SIGKILL``, queda de energia), o arquivo fica para sempre. Antes de criar o
+    novo ``.tmp``, esta função apaga os antigos do mesmo ``<nome>`` na mesma
+    pasta cuja ``mtime`` passa de ``max_age_hours`` (padrão 48 h, ver
+    :func:`stale_tmp_max_age_hours`).
+
+    Garantias: só toca arquivos regulares (nunca symlink) com o padrão exato do
+    ``mkstemp`` deste alvo; um ``.tmp`` recente (talvez de outro processo baixando
+    o mesmo arquivo) nunca é removido; qualquer falha vira aviso no log, jamais
+    erro do download.
+
+    Returns:
+        list[Path]: Os arquivos removidos.
+    """
+    removed: list[Path] = []
+    try:
+        age_hours = stale_tmp_max_age_hours(max_age_hours)
+        if age_hours is None:
+            return removed
+        target_path = Path(target).expanduser()
+        parent = target_path.parent
+        prefix = f".{target_path.name}."
+        pattern = re.compile(re.escape(prefix) + _MKSTEMP_RANDOM + re.escape(".tmp"))
+        cutoff = (time.time() if now is None else now) - age_hours * 3600
+        try:
+            entries = list(os.scandir(parent))
+        except FileNotFoundError:
+            return removed
+        for entry in entries:
+            if not entry.name.startswith(prefix) or not pattern.fullmatch(entry.name):
+                continue
+            try:
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                if entry.stat(follow_symlinks=False).st_mtime >= cutoff:
+                    continue
+                os.unlink(entry.path)
+                removed.append(Path(entry.path))
+                _LOGGER.info(
+                    "Removido .tmp órfão de %s: %s", target_path.name, entry.path
+                )
+            except FileNotFoundError:
+                continue  # outro processo removeu antes
+            except OSError as exc:
+                _LOGGER.warning(
+                    "Não foi possível remover o .tmp órfão %s: %s", entry.path, exc
+                )
+    except Exception as exc:  # a limpeza jamais derruba o download
+        _LOGGER.warning("Falha ao limpar .tmp órfãos de %s: %s", target, exc)
+    return removed
+
+
 def write_stream_atomic(
     path: str | os.PathLike[str],
     register_callback: Callable[[Callable[[bytes], None]], None],
@@ -368,6 +470,7 @@ def write_stream_atomic(
     size = 0
     fd = -1
     temp_path: Path | None = None
+    remove_stale_atomic_temps(target)
     try:
         fd, raw_temp_path = tempfile.mkstemp(
             prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
@@ -417,6 +520,7 @@ def write_bytes_atomic(path: str | os.PathLike[str], content: bytes) -> Path:
     target = ensure_parent(path)
     fd = -1
     temp_path: Path | None = None
+    remove_stale_atomic_temps(target)
     try:
         fd, raw_temp_path = tempfile.mkstemp(
             prefix=f".{target.name}.",
