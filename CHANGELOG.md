@@ -19,13 +19,17 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 - `quantilica.core.files.remove_stale_atomic_temps(alvo, *, max_age_hours=None)`:
   apaga `.<nome>.<8 aleatórios>.tmp` **do mesmo alvo** com `mtime` acima de N
-  horas (padrão 48 h; `QUANTILICA_TMP_MAX_AGE_HOURS` configura, `0` desliga).
-  É chamada antes de criar o `.tmp` em `write_stream_atomic`,
-  `write_bytes_atomic` (e `write_text_atomic`) e nos downloads de
-  `HttpClient`/`AsyncHttpClient`. Um `.tmp` recente (outro processo baixando o
-  mesmo arquivo), de outro alvo ou symlink nunca é tocado; falha ao remover vira
-  aviso no log, nunca erro do download. Cobre o resíduo de `timeout`/`SIGTERM`
-  que mata o download antes do `finally`.
+  horas (padrão 48 h; `QUANTILICA_TMP_MAX_AGE_HOURS` configura). É chamada antes
+  de criar o `.tmp` só nos downloads em streaming: `write_stream_atomic` e os
+  downloads de `HttpClient`/`AsyncHttpClient`. `write_bytes_atomic` (e com ele
+  `write_text_atomic` e os manifests) **não** varre a pasta: os `.tmp` dele
+  vivem milissegundos e um `scandir` por gravação custaria 100 a 200 s numa
+  pasta de 29 mil entradas. A idade precisa ser finita e de pelo menos 6 h:
+  `nan`, `inf` e valor abaixo do piso voltam ao padrão de 48 h com aviso (nunca
+  viram "apague tudo"); `<= 0` desliga a limpeza. Um `.tmp` recente (outro
+  processo baixando o mesmo arquivo), de outro alvo ou symlink nunca é tocado;
+  falha ao remover vira aviso no log, nunca erro do download. Cobre o resíduo de
+  `timeout`/`SIGTERM` que mata o download antes do `finally`.
 
 ### Alterado
 

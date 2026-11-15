@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import os
 import re
 import shutil
@@ -29,6 +30,9 @@ STALE_TMP_ENV = "QUANTILICA_TMP_MAX_AGE_HOURS"
 
 DEFAULT_STALE_TMP_HOURS = 48.0
 """Idade padrão: acima do maior ``timeout`` dos jobs de sync do ecossistema."""
+
+MIN_STALE_TMP_HOURS = 6.0
+"""Piso: abaixo disso um download lento de outro processo correria risco."""
 
 _LOGGER = logging.getLogger(__name__)
 # ``tempfile.mkstemp`` sufixa 8 caracteres de [a-z0-9_] entre o nome e ``.tmp``.
@@ -357,9 +361,10 @@ def stale_tmp_max_age_hours(value: float | None = None) -> float | None:
 
     Ordem: ``value`` explícito, variável ``QUANTILICA_TMP_MAX_AGE_HOURS`` e o
     padrão de 48 h. Um valor menor ou igual a zero desliga a limpeza (devolve
-    ``None``): nunca vira "apague tudo", porque um ``.tmp`` recente pode ser de
-    outro processo baixando o mesmo arquivo. Valor inválido na variável cai no
-    padrão com aviso.
+    ``None``). Valor não finito (``nan``, ``inf``), abaixo do piso de 6 h ou
+    inválido na variável cai no padrão de 48 h com aviso: nunca vira "apague
+    tudo", porque um ``.tmp`` recente pode ser de outro processo baixando o
+    mesmo arquivo.
     """
     if value is None:
         raw = os.environ.get(STALE_TMP_ENV)
@@ -375,6 +380,16 @@ def stale_tmp_max_age_hours(value: float | None = None) -> float | None:
                 DEFAULT_STALE_TMP_HOURS,
             )
             return DEFAULT_STALE_TMP_HOURS
+    if not math.isfinite(value) or 0 < value < MIN_STALE_TMP_HOURS:
+        # nan/inf/abaixo do piso nunca viram "apague tudo": volta ao padrão
+        _LOGGER.warning(
+            "idade mínima %r h recusada (precisa ser finita e de pelo menos "
+            "%s h); usando o padrão de %s h",
+            value,
+            MIN_STALE_TMP_HOURS,
+            DEFAULT_STALE_TMP_HOURS,
+        )
+        return DEFAULT_STALE_TMP_HOURS
     if value <= 0:
         return None
     return float(value)
@@ -394,6 +409,11 @@ def remove_stale_atomic_temps(
     novo ``.tmp``, esta função apaga os antigos do mesmo ``<nome>`` na mesma
     pasta cuja ``mtime`` passa de ``max_age_hours`` (padrão 48 h, ver
     :func:`stale_tmp_max_age_hours`).
+
+    Só os downloads em streaming chamam esta função (``write_stream_atomic`` e
+    o download do ``http``): os ``.tmp`` de ``write_bytes_atomic`` vivem
+    milissegundos e varrer a pasta a cada gravação custaria caro em pastas com
+    dezenas de milhares de arquivos.
 
     Garantias: só toca arquivos regulares (nunca symlink) com o padrão exato do
     ``mkstemp`` deste alvo; um ``.tmp`` recente (talvez de outro processo baixando
@@ -520,7 +540,6 @@ def write_bytes_atomic(path: str | os.PathLike[str], content: bytes) -> Path:
     target = ensure_parent(path)
     fd = -1
     temp_path: Path | None = None
-    remove_stale_atomic_temps(target)
     try:
         fd, raw_temp_path = tempfile.mkstemp(
             prefix=f".{target.name}.",

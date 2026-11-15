@@ -14,6 +14,7 @@ from quantilica.core import files as files_mod
 from quantilica.core import http as http_mod
 from quantilica.core.files import (
     DEFAULT_STALE_TMP_HOURS,
+    MIN_STALE_TMP_HOURS,
     STALE_TMP_ENV,
     remove_stale_atomic_temps,
     stale_tmp_max_age_hours,
@@ -75,11 +76,44 @@ def test_remove_velho_preserva_recente_e_outro_alvo(tmp_path: Path) -> None:
     assert nao_tmp.exists()
 
 
+@pytest.mark.parametrize("valor", [float("nan"), float("inf"), float("-inf"), 0.5, 5.9])
+def test_nan_inf_e_abaixo_do_piso_voltam_ao_padrao_e_nao_apagam_recente(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, valor: float
+) -> None:
+    recente = _tmp(tmp_path, "a.csv", "dn4hhbty", idade_h=1)
+    meio = _tmp(tmp_path, "a.csv", "kq8k160d", idade_h=20)
+    velho = _tmp(tmp_path, "a.csv", "932jot5p", idade_h=72)
+    with caplog.at_level(logging.WARNING, logger=files_mod.__name__):
+        if valor == float("-inf"):
+            # -inf não é finito: padrão de 48 h, não "desliga"
+            assert stale_tmp_max_age_hours(valor) == DEFAULT_STALE_TMP_HOURS
+        assert stale_tmp_max_age_hours(valor) == DEFAULT_STALE_TMP_HOURS
+        assert remove_stale_atomic_temps(tmp_path / "a.csv", max_age_hours=valor) == [
+            velho
+        ]
+    assert recente.exists() and meio.exists() and not velho.exists()
+    assert "recusada" in caplog.text
+
+
+def test_negativo_desliga_e_piso_e_inclusivo() -> None:
+    assert stale_tmp_max_age_hours(-3) is None
+    assert stale_tmp_max_age_hours(0) is None
+    assert stale_tmp_max_age_hours(MIN_STALE_TMP_HOURS) == MIN_STALE_TMP_HOURS
+
+
+@pytest.mark.parametrize("env", ["nan", "inf", "-inf", "3"])
+def test_env_nan_inf_ou_abaixo_do_piso_cai_no_padrao(
+    monkeypatch: pytest.MonkeyPatch, env: str
+) -> None:
+    monkeypatch.setenv(STALE_TMP_ENV, env)
+    assert stale_tmp_max_age_hours() == DEFAULT_STALE_TMP_HOURS
+
+
 def test_limite_configuravel(tmp_path: Path) -> None:
-    p = _tmp(tmp_path, "a.csv", "dn4hhbty", idade_h=3)
+    p = _tmp(tmp_path, "a.csv", "dn4hhbty", idade_h=10)
     assert remove_stale_atomic_temps(tmp_path / "a.csv") == []
     assert p.exists()
-    assert remove_stale_atomic_temps(tmp_path / "a.csv", max_age_hours=2) == [p]
+    assert remove_stale_atomic_temps(tmp_path / "a.csv", max_age_hours=8) == [p]
 
 
 def test_idade_zero_desliga(tmp_path: Path) -> None:
@@ -137,15 +171,22 @@ def test_falha_inesperada_nao_propaga(
     assert "Falha ao limpar" in caplog.text
 
 
-def test_write_bytes_atomic_limpa_so_o_velho_do_mesmo_alvo(tmp_path: Path) -> None:
+def test_write_bytes_atomic_nao_varre_a_pasta(tmp_path: Path) -> None:
+    """Gravações de bytes (manifests, texto) não pagam o ``scandir`` por arquivo."""
     velho = _tmp(tmp_path, "a.csv", "dn4hhbty", idade_h=72)
-    recente = _tmp(tmp_path, "a.csv", "kq8k160d", idade_h=1)
-    outro = _tmp(tmp_path, "b.csv", "932jot5p", idade_h=72)
     write_bytes_atomic(tmp_path / "a.csv", b"ok")
     assert (tmp_path / "a.csv").read_bytes() == b"ok"
-    assert not velho.exists()
-    assert recente.exists()
-    assert outro.exists()
+    assert velho.exists()
+
+
+def test_write_bytes_atomic_nao_chama_a_limpeza(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _falha(*a: object, **k: object) -> None:
+        raise AssertionError("write_bytes_atomic não deve limpar .tmp")
+
+    monkeypatch.setattr(files_mod, "remove_stale_atomic_temps", _falha)
+    write_bytes_atomic(tmp_path / "a.csv", b"ok")
 
 
 def test_write_stream_atomic_limpa_so_o_velho_do_mesmo_alvo(tmp_path: Path) -> None:
@@ -178,7 +219,7 @@ def test_caso_capes_quatro_tmp_de_267_mb_apagados(tmp_path: Path) -> None:
     }
     orfaos = [_tmp(tmp_path, n, s, idade_h=7.5 * 24) for n, s in nomes.items()]
     for nome in nomes:
-        write_bytes_atomic(tmp_path / nome, b"dados")
+        write_stream_atomic(tmp_path / nome, lambda cb: cb(b"dados"))
     assert all(not o.exists() for o in orfaos)
     assert all((tmp_path / n).read_bytes() == b"dados" for n in nomes)
 
@@ -206,7 +247,7 @@ def test_dois_downloads_do_mesmo_arquivo_nao_se_apagam(tmp_path: Path) -> None:
     # o .tmp do primeiro está em uso e recente; o segundo download não pode tocá-lo
     em_voo = list(tmp_path.glob(".a.csv.*.tmp"))
     assert len(em_voo) == 1
-    write_bytes_atomic(alvo, b"segundo")
+    write_stream_atomic(alvo, lambda cb: cb(b"segundo"))
     assert em_voo[0].exists()
     segundo_terminou.set()
     t.join(10)
