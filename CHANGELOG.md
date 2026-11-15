@@ -7,6 +7,40 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+### Adicionado
+
+- `HostPolicy` ganha token bucket, backoff de `429` por host e disjuntor
+  (campos novos com padrão que preserva o comportamento atual): `burst`
+  (capacidade do balde; `1` = espaçamento fixo de sempre), `backoff_base` e
+  `backoff_max` (um `429`, com `Retry-After` ou sem ele, inclusive com corpo
+  HTML, pausa o host inteiro, não só a thread que levou a recusa; o backoff
+  dobra a cada `429` seguido, nunca passa de `backoff_max` e zera na primeira
+  resposta boa) e `breaker_threshold`/`breaker_cooldown`/`breaker_statuses`
+  (opt-in: `405` fora de `HEAD` e página HTML de manutenção ou bloqueio abrem o
+  disjuntor; aberto, o host recusa na hora com `CircuitOpenError`, sem enviar
+  nada nem tentar de novo; passado o cooldown uma requisição de teste decide).
+  Vale em `request` e `stream` do `HttpClient`; o `AsyncHttpClient` segue sem
+  política de host. Novos: `quantilica.core.ratelimit` (`TokenBucket`,
+  `CircuitBreaker`, `HostGuard`, `CircuitOpenError`,
+  `looks_like_maintenance_html`) e `MaintenancePageError`.
+- `quantilica.core.regeneration`: detector de regeração. `RegenerationRule`
+  (colunas de carimbo a ignorar, delimitador, codificação, ordem opcional) e
+  `normalized_content_sha256` hasheiam o conteúdo sem o carimbo, sem BOM, sem
+  diferença de quebra de linha e dentro de gzip. `detect_regeneration` compara
+  com o manifest anterior (`content_sha256` só vale com o mesmo `normalizer`) e
+  devolve `skipped` quando só o carimbo ou o ETag mudou, `changed` quando o dado
+  mudou ou não há hash comparável e `new` sem versão anterior.
+  `with_content_hash` preenche `content_sha256` e `normalizer` no manifest.
+- `quantilica.core.odata`: paginação OData por intervalo de chave, sem
+  `$skip`. `iter_odata_key_pages`/`iter_odata_rows` pedem `chave gt última`
+  ordenado pela chave com `$top` (`start`/`stop` inclusivos, `base_filter`,
+  `select`, chave repetida com `unique_key=False` e `tiebreak`), terminam na
+  página vazia (a página curta só encerra com `trust_short_page=True`, porque
+  o servidor pode limitar o `$top`) e levantam `ODataPaginationError` quando a
+  fonte ignora o `$filter` (caso do Ipeadata) em vez de repetir para sempre.
+  `http_odata_fetcher` liga o helper ao `HttpClient`; `odata_literal` formata
+  os literais.
+
 ### Corrigido
 - CI: o `uv sync` do workflow de testes deixa de passar `--index` e `--index-strategy` do índice Quantilica. O pacote não depende de nada que só exista no índice, e o GitHub Pages responde com 503 intermitente quando o caminho não existe, o que derrubava o job.
 
