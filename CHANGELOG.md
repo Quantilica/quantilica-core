@@ -53,15 +53,23 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
   devolve `skipped` quando só o carimbo ou o ETag mudou, `changed` quando o dado
   mudou ou não há hash comparável e `new` sem versão anterior.
   `with_content_hash` preenche `content_sha256` e `normalizer` no manifest.
+  Campos além do cabeçalho entram no hash (marcados à parte, para nunca
+  passarem por coluna comum), então uma linha com campo a mais não vira
+  `skipped` por engano; o `GzipFile` e o arquivo sob ele são fechados.
 - `quantilica.core.odata`: paginação OData por intervalo de chave, sem
   `$skip`. `iter_odata_key_pages`/`iter_odata_rows` pedem `chave gt última`
   ordenado pela chave com `$top` (`start`/`stop` inclusivos, `base_filter`,
   `select`, chave repetida com `unique_key=False` e `tiebreak`), terminam na
   página vazia (a página curta só encerra com `trust_short_page=True`, porque
   o servidor pode limitar o `$top`) e levantam `ODataPaginationError` quando a
-  fonte ignora o `$filter` (caso do Ipeadata) em vez de repetir para sempre.
-  `http_odata_fetcher` liga o helper ao `HttpClient`; `odata_literal` formata
-  os literais.
+  fonte ignora o `$filter` (caso do Ipeadata) ou manda chave nula em vez de
+  repetir para sempre. O `base_filter` entra sempre entre parênteses. Chaves de
+  texto são comparadas em Python e o servidor ordena pela própria colação: as
+  duas ordens podem divergir (maiúsculas, acentos), então prefira chave
+  numérica ou data ISO. `http_odata_fetcher` liga o helper ao `HttpClient` e
+  levanta `ODataPaginationError` quando um `200` vem sem lista em `value_key`
+  (lista vazia é página vazia válida), em vez de truncar em silêncio;
+  `odata_literal` formata os literais.
 - `quantilica.core.lake_profile` (extra `docs`, `pyarrow`): `profile_from_lake(lake_dir, source_id, dataset_id)` lê só os rodapés Parquet e devolve um `LakeProfile` com o documento `perfil` (versão 1: `granularidade`, `periodos`, `linhas` e `colunas.{nome}.nulos`, com `null` para coluna inexistente no período), a lista de colunas da união (`nome`, `dtype_arrow`, `periodo_inicio`, `periodo_fim`) e `perfil_sha256` do JSON canônico. O período vem do caminho Hive (`ano=`/`mes=`); `null_count` e `num_rows` são somados por grupo de linhas e por arquivo do período; as colunas `ano`, `mes`, `uf`, `_origem` e as chaves de partição ficam fora do documento. `derivar_eras(perfil)` agrupa períodos consecutivos com o mesmo conjunto de colunas em `{inicio, fim, n_colunas, entrou, saiu}`. Também `canonical_json`, `perfil_sha256` e `period_from_path`.
 
 ### Alterado

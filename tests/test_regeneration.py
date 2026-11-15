@@ -170,3 +170,71 @@ def test_header_difference_is_a_real_change():
 
 def _sha(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+# --- review fixes ----------------------------------------------------------------
+
+
+def test_fields_beyond_the_header_are_part_of_the_hash():
+    plain = b"a;b;stamp\n1;2;x\n3;4;x\n"
+    ragged = b"a;b;stamp\n1;2;x\n3;4;x;SURPLUS\n"
+    rule = RegenerationRule(stamp_columns=("stamp",))
+    assert normalized_content_sha256(plain, rule) != normalized_content_sha256(
+        ragged, rule
+    )
+    other = b"a;b;stamp\n1;2;x\n3;4;x;OTHER\n"
+    assert normalized_content_sha256(ragged, rule) != normalized_content_sha256(
+        other, rule
+    )
+    # a surplus field never passes for a regular column
+    as_column = b"a;b;stamp;c\n1;2;x;\n3;4;x;SURPLUS\n"
+    assert normalized_content_sha256(ragged, rule) != normalized_content_sha256(
+        as_column, rule
+    )
+
+
+def test_regeneration_with_surplus_fields_is_not_skipped():
+    previous = b"a;b;stamp\n1;2;x\n"
+    new = b"a;b;stamp\n1;2;y;late column\n"
+    rule = RegenerationRule(stamp_columns=("stamp",))
+    manifest = _manifest(previous, etag="e1", rule=rule)
+    result = detect_regeneration(new, rule, previous_manifest=manifest)
+    assert result.status == "changed"
+
+
+def test_gzip_path_closes_the_file_under_the_gzipfile(tmp_path, recwarn):
+    import gc
+    import warnings
+
+    path = tmp_path / "g.csv.gz"
+    path.write_bytes(gzip.compress(_csv("2026-11-14")))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ResourceWarning)
+        digest = normalized_content_sha256(path, RULE)
+        gc.collect()
+    assert digest == normalized_content_sha256(_csv("2026-11-15"), RULE)
+    assert not [w for w in recwarn if issubclass(w.category, ResourceWarning)]
+
+
+def test_gzip_underlying_file_is_closed(tmp_path, monkeypatch):
+    from quantilica.core import regeneration
+
+    path = tmp_path / "g.csv.gz"
+    path.write_bytes(gzip.compress(_csv("2026-11-14")))
+    opened = []
+    real_open = regeneration.gzip.GzipFile
+
+    def spy(*args, **kwargs):
+        gz = real_open(*args, **kwargs)
+        opened.append(kwargs["fileobj"])
+        return gz
+
+    monkeypatch.setattr(regeneration.gzip, "GzipFile", spy)
+    normalized_content_sha256(path, RULE)
+    assert opened and all(f.closed for f in opened)
+
+
+def test_caller_stream_is_never_closed():
+    raw = io.BytesIO(gzip.compress(_csv("2026-11-14")))
+    normalized_content_sha256(raw, RULE)
+    assert not raw.closed

@@ -1,6 +1,7 @@
 """OData pagination by key range, against a fake server (no network)."""
 
 import datetime as dt
+import json
 import re
 from decimal import Decimal
 
@@ -95,9 +96,9 @@ def test_start_stop_and_base_filter_and_select():
         )
     )
     assert [r["id"] for r in rows] == [6, 7, 8, 9, 10, 11, 12]
-    assert fake.calls[0]["$filter"] == "Indicador eq 'IPCA' and id ge 6 and id le 12"
+    assert fake.calls[0]["$filter"] == "(Indicador eq 'IPCA') and id ge 6 and id le 12"
     assert fake.calls[0]["$select"] == "id, valor"
-    assert fake.calls[1]["$filter"].startswith("Indicador eq 'IPCA' and id gt 10")
+    assert fake.calls[1]["$filter"].startswith("(Indicador eq 'IPCA') and id gt 10")
 
 
 def test_string_date_keys_olinda_style():
@@ -190,3 +191,74 @@ def test_http_fetcher_with_fake_transport():
     out = list(iter_odata_rows(fetch, key="id", page_size=3))
     assert [r["id"] for r in out] == list(range(1, 8))
     assert seen[1]["$filter"] == "id gt 3"
+
+
+# --- review fixes -------------------------------------------------------------
+
+
+def test_null_key_from_the_server_raises_instead_of_looping():
+    # Without a dedicated "unset" marker a null key looked like "no last key":
+    # the first page was requested again, forever.
+    calls = []
+
+    def fetch(params):
+        calls.append(dict(params))
+        if len(calls) > 5:
+            raise AssertionError("looped")
+        return [{"id": 1}, {"id": None}]
+
+    with pytest.raises(ODataPaginationError, match="null key"):
+        list(iter_odata_key_pages(fetch, key="id", page_size=2))
+
+
+def test_null_key_alone_on_the_first_page_raises():
+    with pytest.raises(ODataPaginationError, match="null key"):
+        list(iter_odata_key_pages(lambda p: [{"id": None}], key="id"))
+
+
+def test_null_key_with_non_unique_key_raises():
+    def fetch(params):
+        return [{"id": 1}, {"id": 1}, {"id": None}]
+
+    with pytest.raises(ODataPaginationError, match="null key"):
+        list(iter_odata_key_pages(fetch, key="id", unique_key=False, page_size=3))
+
+
+def test_http_fetcher_without_value_key_raises_instead_of_truncating():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, json={"error": "throttled", "retry": 5})
+
+    client = HttpClient(transport=httpx2.MockTransport(handler))
+    fetch = http_odata_fetcher(client, "https://olinda.example/odata/Entidade")
+    with pytest.raises(ODataPaginationError, match="value"):
+        list(iter_odata_rows(fetch, key="id"))
+
+
+@pytest.mark.parametrize("payload", [{"value": None}, {"value": "x"}, None, 3])
+def test_http_fetcher_rejects_non_list_payloads(payload):
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, content=json.dumps(payload).encode())
+
+    client = HttpClient(transport=httpx2.MockTransport(handler))
+    fetch = http_odata_fetcher(client, "https://olinda.example/odata/Entidade")
+    with pytest.raises(ODataPaginationError):
+        fetch({})
+
+
+def test_http_fetcher_empty_list_is_a_valid_empty_page():
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, json={"value": []})
+
+    client = HttpClient(transport=httpx2.MockTransport(handler))
+    fetch = http_odata_fetcher(client, "https://olinda.example/odata/Entidade")
+    assert list(iter_odata_rows(fetch, key="id")) == []
+
+
+def test_base_filter_is_always_parenthesized():
+    fake = FakeOData([{"id": i, "ano": 2026} for i in range(1, 4)])
+    list(iter_odata_key_pages(fake, key="id", base_filter="ano eq 2026"))
+    assert fake.calls[0]["$filter"] == "(ano eq 2026)"  # even alone, no "or"
+    assert fake.calls[1]["$filter"] == "(ano eq 2026) and id gt 3"
+    tricky = FakeOData([{"id": 1}])
+    list(iter_odata_key_pages(tricky, key="id", base_filter="a eq 1 OR b eq 2"))
+    assert tricky.calls[0]["$filter"] == "(a eq 1 OR b eq 2)"

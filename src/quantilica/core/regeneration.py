@@ -44,6 +44,8 @@ RegenerationStatus = Literal["skipped", "changed", "new"]
 
 _FIELD_SEP = b"\x1f"
 _ROW_SEP = b"\x1e"
+_EXTRA_MARK = "\x1d"
+"""Separates the kept columns from fields beyond the header in the hash."""
 
 
 @dataclass(frozen=True)
@@ -115,20 +117,36 @@ class RegenerationResult:
         return self.status == "skipped"
 
 
-def _open_binary(source: bytes | str | Path | BinaryIO) -> tuple[BinaryIO, bool]:
-    """Open ``source`` as a binary stream, un-gzipping when it is gzip."""
-    owns = True
+def _open_binary(
+    source: bytes | str | Path | BinaryIO,
+) -> tuple[BinaryIO, list[BinaryIO]]:
+    """Open ``source`` as a binary stream, un-gzipping when it is gzip.
+
+    Returns:
+        tuple: The stream to read and the streams the caller must close (the
+        ``GzipFile`` and the file under it; never a stream the caller passed).
+    """
+    owned: list[BinaryIO] = []
     if isinstance(source, bytes):
         raw: BinaryIO = io.BytesIO(source)
+        owned.append(raw)
     elif isinstance(source, str | Path):
         raw = open(source, "rb")  # noqa: SIM115 - closed by the caller
+        owned.append(raw)
     else:
-        raw, owns = source, False
-    magic = raw.read(2)
-    raw.seek(raw.tell() - len(magic))
-    if magic == b"\x1f\x8b":
-        return gzip.GzipFile(fileobj=raw), owns
-    return raw, owns
+        raw = source
+    try:
+        magic = raw.read(2)
+        raw.seek(raw.tell() - len(magic))
+        if magic == b"\x1f\x8b":
+            gz = gzip.GzipFile(fileobj=raw)
+            owned.insert(0, gz)  # close the GzipFile before the file under it
+            return gz, owned
+    except BaseException:
+        for stream in owned:
+            stream.close()
+        raise
+    return raw, owned
 
 
 def _rows(stream: BinaryIO, rule: RegenerationRule) -> Iterable[tuple[str, ...]]:
@@ -138,15 +156,22 @@ def _rows(stream: BinaryIO, rule: RegenerationRule) -> Iterable[tuple[str, ...]]
     text = io.TextIOWrapper(stream, encoding=encoding, newline="")
     try:
         keep: list[int] | None = None
+        width = 0
         for row in csv.reader(text, delimiter=rule.delimiter):
             if keep is None:
                 header = [c.strip() for c in row]
+                width = len(header)
                 keep = [
                     i for i, c in enumerate(header) if c.casefold() not in rule._lowered
                 ]
                 yield tuple(header[i] for i in keep)
             elif row:  # skip blank lines
-                yield tuple(row[i] if i < len(row) else "" for i in keep)
+                kept = tuple(row[i] if i < len(row) else "" for i in keep)
+                if len(row) > width:
+                    # Fields past the header are data too: hash them (marked,
+                    # so they never pass for a kept column).
+                    kept = (*kept, _EXTRA_MARK, *row[width:])
+                yield kept
     finally:
         text.detach()  # never close a stream we do not own
 
@@ -163,7 +188,7 @@ def normalized_content_sha256(
     Returns:
         str: Hex SHA-256 of the canonical serialization of the kept columns.
     """
-    stream, owns = _open_binary(source)
+    stream, owned = _open_binary(source)
     try:
         digest = hashlib.sha256()
         rows = _rows(stream, rule)
@@ -181,8 +206,8 @@ def normalized_content_sha256(
             digest.update(_ROW_SEP)
         return digest.hexdigest()
     finally:
-        if owns:
-            stream.close()
+        for closeable in owned:
+            closeable.close()
 
 
 def with_content_hash(

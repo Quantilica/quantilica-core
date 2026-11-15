@@ -58,8 +58,14 @@ def odata_literal(value: Any) -> str:
     return f"'{text}'"
 
 
-def _and(parts: Sequence[str]) -> str:
-    return " and ".join(f"({p})" if " or " in p else p for p in parts if p)
+_UNSET: Any = object()
+""""No last key yet" marker; ``None`` is a value a (bad) server can send."""
+
+
+def _and(base_filter: str | None, parts: Sequence[str]) -> str:
+    """AND the user's ``base_filter`` (always parenthesized) with key ranges."""
+    wrapped = [f"({base_filter})"] if base_filter else []
+    return " and ".join([*wrapped, *(p for p in parts if p)])
 
 
 def iter_odata_key_pages(
@@ -109,19 +115,24 @@ def iter_odata_key_pages(
         ODataPaginationError: The key did not advance (the server ignores
             ``$filter``), the key order is violated, a unique key repeats, or
             more rows share one key than fit in a page when ``unique_key`` is
-            ``False``.
+            ``False``; a row with a null key.
+
+    Note:
+        Keys are compared in Python (to detect a server that ignores the
+        filter) while the server orders by its own collation. For string keys
+        the two orders may differ (case, accents, locale), which can raise a
+        spurious :class:`ODataPaginationError` or reorder rows; prefer numeric
+        or ISO date keys. This is a known limitation, not handled here.
     """
     if page_size < 1:
         raise ValueError("page_size must be >= 1")
-    last: Any = None
+    last: Any = _UNSET
     seen_at_last = 0
     pages = 0
     order_by = ", ".join([key, *tiebreak])
     while max_pages is None or pages < max_pages:
         parts: list[str] = []
-        if base_filter:
-            parts.append(base_filter)
-        if last is not None:
+        if last is not _UNSET:
             op = "gt" if unique_key else "ge"
             parts.append(f"{key} {op} {to_literal(last)}")
         elif start is not None:
@@ -129,8 +140,9 @@ def iter_odata_key_pages(
         if stop is not None:
             parts.append(f"{key} le {to_literal(stop)}")
         params: dict[str, str] = dict(extra_params or {})
-        if parts:
-            params["$filter"] = _and(parts)
+        filter_expr = _and(base_filter, parts)
+        if filter_expr:
+            params["$filter"] = filter_expr
         params["$orderby"] = order_by
         params["$top"] = str(page_size)
         if select:
@@ -138,9 +150,12 @@ def iter_odata_key_pages(
 
         raw = list(fetch_page(params))
         rows = raw
-        if not unique_key and last is not None:
+        if not unique_key and last is not _UNSET:
             skip = 0
-            while skip < min(seen_at_last, len(rows)) and rows[skip][key] == last:
+            while (
+                skip < min(seen_at_last, len(rows))
+                and rows[skip].get(key, _UNSET) == last
+            ):
                 skip += 1
             rows = rows[skip:]
         if not rows:
@@ -174,7 +189,11 @@ def _check_order(
         if key not in row:
             raise ODataPaginationError(f"row without the key column {key!r}")
         current = row[key]
-        if previous is not None:
+        if current is None:
+            raise ODataPaginationError(
+                f"null key {key!r} from the server: cannot paginate by key range"
+            )
+        if previous is not _UNSET:
             advanced = current > previous if unique_key else current >= previous
             if not advanced:
                 if previous == current and unique_key:
@@ -210,13 +229,28 @@ def http_odata_fetcher(
         value_key: Envelope property holding the rows (``value`` in OData).
 
     Returns:
-        PageFetcher: Callable accepted by :func:`iter_odata_key_pages`.
+        PageFetcher: Callable accepted by :func:`iter_odata_key_pages`. It
+        raises :class:`ODataPaginationError` when a ``200`` carries no list
+        under ``value_key`` (an empty list is a valid, empty page) instead of
+        returning ``[]`` and silently truncating the extraction.
     """
 
     def fetch(params: Mapping[str, str]) -> Sequence[Mapping[str, Any]]:
         payload = client.get_json(url, params=dict(params))
         if isinstance(payload, Mapping):
-            return payload.get(value_key) or []
-        return payload or []
+            rows = payload.get(value_key)
+            if not isinstance(rows, Sequence) or isinstance(rows, str | bytes):
+                raise ODataPaginationError(
+                    f"response of {url} has no list under {value_key!r} "
+                    f"(keys: {sorted(map(str, payload))[:8]}); refusing to treat "
+                    "it as an empty page"
+                )
+            return rows
+        if isinstance(payload, Sequence) and not isinstance(payload, str | bytes):
+            return payload
+        raise ODataPaginationError(
+            f"response of {url} is neither an envelope nor a list: "
+            f"{type(payload).__name__}"
+        )
 
     return fetch
