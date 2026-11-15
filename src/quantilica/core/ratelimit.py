@@ -6,16 +6,19 @@ can be unit-tested without a network and without real waiting.
 
 - :class:`TokenBucket`: paces requests at ``1 / interval`` per second with a
   configurable burst. ``burst=1`` is exactly the classic fixed spacing.
-- :class:`HostGuard`: a bucket plus a host-wide *penalty* (set by a ``429``
-  so every thread waits, not only the one that got the refusal) plus an
-  optional :class:`CircuitBreaker`.
+- :class:`HostGuard`: a bucket plus an optional host-wide *penalty* (opt-in:
+  a ``429`` then makes every thread wait, not only the one that got the
+  refusal) plus an optional :class:`CircuitBreaker`.
 - :class:`CircuitBreaker`: opens after N consecutive "host is down" signals
   (``405`` on a non-``HEAD`` request, an HTML maintenance/WAF page) and
-  rejects further requests for a cooldown, then lets one probe through.
+  rejects further requests for a cooldown, then lets one probe through. A
+  probe that ends without a clear success (5xx, 429, network error) counts as
+  a failure and re-opens the circuit.
 """
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -63,29 +66,81 @@ class CircuitOpenError(FetchError):
         self.retry_in = retry_in
 
 
+_BODY_LIMIT = 8192
+"""Bytes of body the detector reads; a body that fills it is not "short"."""
+_VISIBLE_TEXT_LIMIT = 1500
+"""A maintenance/WAF page is a few lines; longer visible text is a real page."""
+_HIDDEN_BLOCK = re.compile(
+    r"<(?P<tag>[a-z][a-z0-9]*)\b[^>]*"
+    r"(?:\bhidden\b|display\s*:\s*none|visibility\s*:\s*hidden)[^>]*>"
+    r".*?</(?P=tag)\s*>",
+    re.DOTALL,
+)
+_INVISIBLE_BLOCK = re.compile(
+    r"<(script|style|noscript|template)\b.*?</\1\s*>|<!--.*?-->", re.DOTALL
+)
+_TAG = re.compile(r"<[^>]*>")
+
+
+def _visible_text(html: str) -> str:
+    """Best-effort visible text: no scripts, comments or hidden elements."""
+    html = _INVISIBLE_BLOCK.sub(" ", html)
+    html = _HIDDEN_BLOCK.sub(" ", html)
+    return " ".join(_TAG.sub(" ", html).split()).lower()
+
+
 def looks_like_maintenance_html(
-    content_type: str | None, body_prefix: bytes | str | None
+    content_type: str | None,
+    body_prefix: bytes | str | None,
+    *,
+    status: int | None = None,
+    expect_html: bool = False,
 ) -> bool:
     """Tell whether a response is an HTML maintenance or WAF block page.
 
+    The heuristic is deliberately strict, because a false positive feeds the
+    circuit breaker and can lock a healthy host out. All of these must hold:
+
+    - the body is HTML;
+    - the body is short (it fits in the inspected prefix and has little
+      visible text): a real page is not a one-paragraph block notice;
+    - a maintenance marker appears in the *visible* text (the title counts;
+      scripts, styles, comments and ``hidden``/``display:none`` elements do
+      not, so a template with a hidden "Access denied" string is ignored);
+    - the response is suspicious: an error ``status`` (``>= 400``), or HTML
+      where the request did not expect HTML (``expect_html=False``).
+
     Args:
         content_type: The ``Content-Type`` header (may be ``None``).
-        body_prefix: The first bytes of the body (a few KiB are enough).
+        body_prefix: The first bytes of the body (``8192`` are inspected; a
+            body that fills them is considered long).
+        status: HTTP status of the response, when known. An error status makes
+            the response suspicious even if HTML was expected.
+        expect_html: The request legitimately expects an HTML page (a
+            ``.html`` URL, say), so a ``2xx`` HTML body alone is not
+            suspicious.
 
     Returns:
-        bool: True when the body is HTML and carries a maintenance marker.
+        bool: True when the response looks like a maintenance/WAF page.
     """
     if not body_prefix:
         return False
+    if len(body_prefix) >= _BODY_LIMIT:
+        return False
     if isinstance(body_prefix, bytes):
-        text = body_prefix[:4096].decode("utf-8", errors="ignore")
+        text = body_prefix.decode("utf-8", errors="ignore")
     else:
-        text = body_prefix[:4096]
-    head = text.lstrip("﻿ \t\r\n").lower()
+        text = body_prefix
+    head = text.lstrip("\ufeff \t\r\n").lower()
     is_html = "html" in (content_type or "").lower() or head.startswith(_HTML_PREFIXES)
     if not is_html:
         return False
-    return any(marker in head for marker in _MAINTENANCE_MARKERS)
+    if expect_html and not (status is not None and status >= 400):
+        return False
+    visible = _visible_text(head)
+    if len(visible) > _VISIBLE_TEXT_LIMIT:
+        return False
+    return any(marker in visible for marker in _MAINTENANCE_MARKERS)
 
 
 class TokenBucket:
@@ -171,6 +226,7 @@ class CircuitBreaker:
         self._failures = 0
         self._opened_at: float | None = None
         self._probing = False
+        self._probe_gen = 0
 
     @property
     def state(self) -> Literal["closed", "open", "half-open"]:
@@ -185,25 +241,40 @@ class CircuitBreaker:
             return "half-open"
         return "open"
 
+    def enter(self) -> tuple[float, int | None]:
+        """Ask to send a request.
+
+        Returns:
+            tuple[float, int | None]: ``(0.0, None)`` to proceed normally (a
+            closed circuit), ``(0.0, ticket)`` when this caller is the
+            half-open *probe* (it must report back with :meth:`record_success`,
+            :meth:`record_failure`, :meth:`release` or :meth:`abandon`), or
+            ``(seconds_left, None)`` when the request must not be sent.
+        """
+        if self.threshold <= 0:
+            return 0.0, None
+        with self._lock:
+            state = self._state_locked()
+            if state == "closed":
+                return 0.0, None
+            if state == "half-open":
+                if self._probing:
+                    return max(self.cooldown, 1.0), None
+                self._probing = True
+                self._probe_gen += 1
+                return 0.0, self._probe_gen
+            assert self._opened_at is not None
+            left = max(0.0, self.cooldown - (self._clock() - self._opened_at))
+            return left, None
+
     def before_request(self) -> float:
         """Return ``0`` to proceed, or the seconds left while open.
 
         In ``half-open`` exactly one caller (the probe) gets ``0``; the others
-        are rejected until the probe reports back.
+        are rejected until the probe reports back. Prefer :meth:`enter`, which
+        also hands the probe its ticket.
         """
-        if self.threshold <= 0:
-            return 0.0
-        with self._lock:
-            state = self._state_locked()
-            if state == "closed":
-                return 0.0
-            if state == "half-open":
-                if self._probing:
-                    return max(self.cooldown, 1.0)
-                self._probing = True
-                return 0.0
-            assert self._opened_at is not None
-            return max(0.0, self.cooldown - (self._clock() - self._opened_at))
+        return self.enter()[0]
 
     def record_success(self) -> None:
         """A normal response closes the circuit and clears the count."""
@@ -222,17 +293,54 @@ class CircuitBreaker:
                 self._opened_at = self._clock()
                 self._probing = False
 
+    def abandon(self, ticket: int | None) -> None:
+        """The probe ended without a verdict (5xx, 429, network error).
+
+        Anything that is not a success counts as a failure of the probe and
+        re-opens the circuit; without this the probe slot would stay taken
+        forever and every later request would be refused. A no-op when
+        ``ticket`` is ``None`` or the probe already reported.
+        """
+        if ticket is None:
+            return
+        with self._lock:
+            if self._probing and ticket == self._probe_gen:
+                self._failures += 1
+                self._opened_at = self._clock()
+                self._probing = False
+
+    def release(self, ticket: int | None) -> None:
+        """The probe got a *neutral* answer: free the slot, keep half-open.
+
+        The next caller probes again. A no-op when ``ticket`` is ``None`` or
+        the probe already reported.
+        """
+        if ticket is None:
+            return
+        with self._lock:
+            if self._probing and ticket == self._probe_gen:
+                self._probing = False
+
 
 class HostGuard:
-    """Everything the client enforces for one host: pacing, penalty, breaker."""
+    """Everything the client enforces for one host: pacing, penalty, breaker.
+
+    The host-wide ``429`` penalty is opt-in: it is on only when
+    ``backoff_base`` is given. Without it a ``429`` changes nothing here and
+    the caller keeps its own retry delay (``Retry-After`` honoured as sent, or
+    its own exponential delay), exactly as before this guard existed.
+    """
+
+    DEFAULT_BACKOFF_MAX = 300.0
+    """Cap of the doubling backoff when ``backoff_max`` is not set."""
 
     def __init__(
         self,
         interval: float,
         *,
         burst: int = 1,
-        backoff_base: float = 5.0,
-        backoff_max: float = 300.0,
+        backoff_base: float | None = None,
+        backoff_max: float | None = None,
         breaker_threshold: int = 0,
         breaker_cooldown: float = 300.0,
         clock: Callable[[], float] = time.monotonic,
@@ -243,17 +351,22 @@ class HostGuard:
         Args:
             interval: Seconds between requests (token refill time).
             burst: Token bucket capacity.
-            backoff_base: First backoff (seconds) for a ``429`` without
-                ``Retry-After``; doubles per consecutive ``429``.
-            backoff_max: Cap for any backoff, ``Retry-After`` included.
+            backoff_base: ``None`` (default) leaves ``429`` handling to the
+                caller. A number turns on the host-wide pause: the first
+                backoff (seconds) for a ``429`` without ``Retry-After``,
+                doubling per consecutive ``429``.
+            backoff_max: Only with ``backoff_base``. ``None`` caps the
+                doubling backoff at :attr:`DEFAULT_BACKOFF_MAX` and never cuts
+                a server ``Retry-After``; a number caps every pause,
+                ``Retry-After`` included.
             breaker_threshold: Consecutive "host is down" signals that open
                 the circuit; ``0`` disables the breaker.
             breaker_cooldown: Seconds the circuit stays open.
             clock: Monotonic clock (injectable for tests).
             sleep: Sleep function (injectable for tests).
         """
-        self.backoff_base = max(0.0, backoff_base)
-        self.backoff_max = max(0.0, backoff_max)
+        self.backoff_base = None if backoff_base is None else max(0.0, backoff_base)
+        self.backoff_max = None if backoff_max is None else max(0.0, backoff_max)
         self._clock = clock
         self._sleep = sleep
         self.bucket = TokenBucket(interval, burst, clock=clock, sleep=sleep)
@@ -262,39 +375,79 @@ class HostGuard:
         self._blocked_until = 0.0
         self._consecutive_429 = 0
 
-    def acquire(self, host: str) -> None:
+    def acquire(self, host: str) -> int | None:
         """Wait for the host-wide penalty and the bucket; raise if breaker open.
+
+        Returns:
+            int | None: The probe ticket when this request is the half-open
+            probe of the circuit breaker, else ``None``. The caller must
+            settle it with :meth:`settle` (or by registering the response).
 
         Raises:
             CircuitOpenError: The circuit breaker is open for this host.
         """
-        retry_in = self.breaker.before_request()
+        retry_in, ticket = self.breaker.enter()
         if retry_in > 0:
             raise CircuitOpenError(host, retry_in)
-        with self._lock:
-            penalty = self._blocked_until - self._clock()
-        if penalty > 0:
-            self._sleep(penalty)
-        self.bucket.acquire()
+        try:
+            with self._lock:
+                penalty = self._blocked_until - self._clock()
+            if penalty > 0:
+                self._sleep(penalty)
+            self.bucket.acquire()
+        except BaseException:
+            self.breaker.release(ticket)
+            raise
+        return ticket
 
-    def register_429(self, retry_after: float | None) -> float:
-        """Record a ``429`` and block the whole host for the backoff.
+    def settle(self, ticket: int | None) -> None:
+        """Close the books on a request: a probe with no verdict is a failure."""
+        self.breaker.abandon(ticket)
+
+    def register_429(self, retry_after: float | None) -> float | None:
+        """Record a ``429``; with the pause on, block the whole host.
+
+        Concurrent ``429`` of one burst count once: a refusal that arrives
+        while the pause it triggered is still running (``now`` before the
+        current block) does not escalate the streak, it only returns the time
+        left (or extends the pause when its ``Retry-After`` is longer).
 
         Args:
             retry_after: Parsed ``Retry-After`` seconds, if the server sent one
                 (an HTML 429 body usually comes without it).
 
         Returns:
-            float: The backoff applied, in seconds (already capped).
+            float | None: The seconds to wait before retrying. With the pause
+            off (no ``backoff_base``): the ``Retry-After`` as sent, or
+            ``None`` when there is none (the caller picks its own delay).
         """
+        has_header = retry_after is not None and retry_after > 0
+        if self.backoff_base is None:
+            return float(retry_after) if has_header and retry_after else None
         with self._lock:
+            now = self._clock()
+            if has_header:
+                header = float(retry_after or 0.0)
+                if self.backoff_max is not None:
+                    header = min(header, self.backoff_max)
+            else:
+                header = 0.0
+            if now < self._blocked_until:  # same burst: do not escalate
+                if now + header > self._blocked_until:
+                    self._blocked_until = now + header
+                return self._blocked_until - now
             self._consecutive_429 += 1
-            if retry_after is not None and retry_after > 0:
-                delay = retry_after
+            if has_header:
+                delay = header
             else:
                 delay = self.backoff_base * (2 ** (self._consecutive_429 - 1))
-            delay = min(delay, self.backoff_max)
-            self._blocked_until = max(self._blocked_until, self._clock() + delay)
+                delay = min(
+                    delay,
+                    self.DEFAULT_BACKOFF_MAX
+                    if self.backoff_max is None
+                    else self.backoff_max,
+                )
+            self._blocked_until = max(self._blocked_until, now + delay)
         return delay
 
     def register_ok(self) -> None:
@@ -306,3 +459,11 @@ class HostGuard:
     def register_down(self) -> None:
         """A maintenance/405 signal: feed the circuit breaker."""
         self.breaker.record_failure()
+
+    def register_neutral(self, ticket: int | None = None) -> None:
+        """A response that says nothing about the host (e.g. ``HEAD`` ``405``).
+
+        Neither resets the failure count nor closes a half-open circuit; a
+        half-open probe that got it frees its slot for the next caller.
+        """
+        self.breaker.release(ticket)

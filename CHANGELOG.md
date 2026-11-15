@@ -9,20 +9,42 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ### Adicionado
 
-- `HostPolicy` ganha token bucket, backoff de `429` por host e disjuntor
-  (campos novos com padrão que preserva o comportamento atual): `burst`
-  (capacidade do balde; `1` = espaçamento fixo de sempre), `backoff_base` e
-  `backoff_max` (um `429`, com `Retry-After` ou sem ele, inclusive com corpo
-  HTML, pausa o host inteiro, não só a thread que levou a recusa; o backoff
-  dobra a cada `429` seguido, nunca passa de `backoff_max` e zera na primeira
-  resposta boa) e `breaker_threshold`/`breaker_cooldown`/`breaker_statuses`
-  (opt-in: `405` fora de `HEAD` e página HTML de manutenção ou bloqueio abrem o
-  disjuntor; aberto, o host recusa na hora com `CircuitOpenError`, sem enviar
-  nada nem tentar de novo; passado o cooldown uma requisição de teste decide).
-  Vale em `request` e `stream` do `HttpClient`; o `AsyncHttpClient` segue sem
-  política de host. Novos: `quantilica.core.ratelimit` (`TokenBucket`,
-  `CircuitBreaker`, `HostGuard`, `CircuitOpenError`,
-  `looks_like_maintenance_html`) e `MaintenancePageError`.
+- `HostPolicy` ganha token bucket, backoff de `429` por host e disjuntor.
+  Sem configurar os campos novos o comportamento é o de antes:
+  - `burst` (capacidade do balde; `1`, o padrão, é o espaçamento fixo de
+    sempre).
+  - `429`: por padrão (`backoff_base=None`) só a requisição recusada espera,
+    pelo `Retry-After` do servidor (nunca cortado) ou, sem ele, pelo
+    `retry_base_delay` do cliente dobrando a cada tentativa. É opt-in definir
+    `backoff_base`: aí o host inteiro pausa (todas as threads, não só a
+    recusada) por `Retry-After` quando houver, ou por `backoff_base` dobrando a
+    cada `429` seguido (também com corpo HTML), e zera na primeira resposta
+    boa. Respostas `429` da mesma rajada contam uma vez só: a que chega
+    enquanto a pausa vigente corre devolve o tempo que falta, sem escalar. O
+    backoff dobrado para em 300 s; só um `backoff_max` explícito também limita
+    o `Retry-After` do servidor.
+  - Disjuntor (opt-in, `breaker_threshold`/`breaker_cooldown`/
+    `breaker_statuses`): um status de `breaker_statuses` (`405`) fora de `HEAD`
+    ou uma página HTML de manutenção ou bloqueio abre o disjuntor; aberto, o
+    host recusa na hora com `CircuitOpenError`, sem enviar nada nem tentar de
+    novo; passado o cooldown uma requisição de teste decide, e qualquer
+    resultado dela que não seja sucesso (5xx, `429`, erro de rede) reabre o
+    disjuntor em vez de travá-lo. `HEAD` respondido com status do disjuntor ou
+    `403` é neutro (não zera a contagem nem fecha o meio-aberto), e o `GET` de
+    reserva do `head_or_get` passa pelo disjuntor.
+  - Página HTML de manutenção (`looks_like_maintenance_html`): só vale corpo
+    HTML curto (cabe nos 8 KiB lidos e tem pouco texto visível) com o marcador
+    no texto visível (título conta; script, estilo, comentário e elemento
+    oculto não) e resposta suspeita: status de erro (`>= 400`) ou HTML numa URL
+    que não é de página (`.html`, `.php`, terminada em `/`...).
+    `detect_maintenance_html=False` desliga a heurística e mantém o disjuntor
+    por status (`405`). Só as chamadas que leem o corpo inteiro (`request`,
+    `get`, `get_json`...) o inspecionam: `stream()` não inspeciona o corpo,
+    só o status.
+  Vale em `request`, `stream` e no `GET` de reserva do `head_or_get` do
+  `HttpClient`; o `AsyncHttpClient` segue sem política de host. Novos:
+  `quantilica.core.ratelimit` (`TokenBucket`, `CircuitBreaker`, `HostGuard`,
+  `CircuitOpenError`, `looks_like_maintenance_html`) e `MaintenancePageError`.
 - `quantilica.core.regeneration`: detector de regeração. `RegenerationRule`
   (colunas de carimbo a ignorar, delimitador, codificação, ordem opcional) e
   `normalized_content_sha256` hasheiam o conteúdo sem o carimbo, sem BOM, sem
