@@ -41,6 +41,7 @@ from .manifests import (
     manifest_sidecar_path,
     write_manifest_sidecar,
 )
+from .ratelimit import HostGuard, looks_like_maintenance_html
 from .retry import RetryError, async_retry_call, exponential_delay, retry_call
 from .storage import validate_payload_signature
 
@@ -123,13 +124,47 @@ class RetryableHttpStatusError(HttpStatusError):
 
 @dataclass(frozen=True)
 class HostPolicy:
-    """Per-host rate limiting, concurrency, and reliability policy."""
+    """Per-host rate limiting, concurrency, and reliability policy.
+
+    Pacing is a token bucket: one token refills every ``min_interval``
+    seconds and the bucket holds ``burst`` tokens, so ``burst=1`` (default)
+    is the classic fixed spacing. On a ``429`` the whole host is paused (not
+    only the failing thread) for ``Retry-After`` when present, else
+    ``backoff_base`` doubling per consecutive ``429`` (an HTML ``429`` body
+    usually has no header); the pause never exceeds ``backoff_max``. The
+    optional circuit breaker (``breaker_threshold > 0``) opens after that
+    many consecutive "host is down" signals (a status in ``breaker_statuses``
+    on a non-``HEAD`` request, or an HTML maintenance page) and rejects
+    requests with :class:`~quantilica.core.ratelimit.CircuitOpenError` for
+    ``breaker_cooldown`` seconds.
+    """
 
     min_interval: float = 1.0
     max_concurrency: int = 4
     deadline: float | None = None
     max_redirects: int = 10
     retry_on_tls_eof: bool = True
+    burst: int = 1
+    backoff_base: float = 5.0
+    backoff_max: float = 300.0
+    breaker_threshold: int = 0
+    breaker_cooldown: float = 300.0
+    breaker_statuses: frozenset[int] = frozenset({405})
+
+
+class MaintenancePageError(HttpStatusError):
+    """A host answered with an HTML maintenance/WAF page instead of data.
+
+    Only raised for hosts whose :class:`HostPolicy` enables the circuit
+    breaker (``breaker_threshold > 0``); each occurrence counts toward it.
+    """
+
+    def __init__(self, url: str, status_code: int) -> None:
+        FetchError.__init__(
+            self, f"HTML maintenance page (HTTP {status_code}) while fetching {url}"
+        )
+        self.url = url
+        self.status_code = status_code
 
 
 class IncompleteDownloadError(StorageError):
@@ -294,6 +329,7 @@ __all__ = [
     "HostPolicy",
     "HttpClient",
     "HttpStatusError",
+    "MaintenancePageError",
     "ProgressCallback",
     "RETRY_STATUS_CODES",
     "RateLimiter",
@@ -361,7 +397,9 @@ class HttpClient:
         self.jitter = float(jitter)
         self.http2 = http2
         self._rate_limiter = _RateLimiter(max(0.0, float(min_interval)))
-        self._host_rate_limiters: dict[str, RateLimiter] = {}
+        self._host_guards: dict[str, HostGuard] = {}
+        self._sleep: Callable[[float], None] = time.sleep
+        self._clock: Callable[[], float] = time.monotonic
         self._host_semaphores: dict[str, threading.BoundedSemaphore] = {}
         self._lock = threading.Lock()
         self._client: httpx2.Client | None = None
@@ -377,16 +415,81 @@ class HttpClient:
         host = self._extract_host(url)
         return self.host_policies.get(host)
 
+    def _guard_for(self, url: str) -> HostGuard | None:
+        policy = self._policy_for(url)
+        if policy is None:
+            return None
+        host = self._extract_host(url)
+        with self._lock:
+            guard = self._host_guards.get(host)
+            if guard is None:
+                guard = HostGuard(
+                    policy.min_interval,
+                    burst=policy.burst,
+                    backoff_base=policy.backoff_base,
+                    backoff_max=policy.backoff_max,
+                    breaker_threshold=policy.breaker_threshold,
+                    breaker_cooldown=policy.breaker_cooldown,
+                    clock=lambda: self._clock(),
+                    sleep=lambda seconds: self._sleep(seconds),
+                )
+                self._host_guards[host] = guard
+        return guard
+
     def _acquire_rate_limits(self, url: str) -> None:
         self._rate_limiter.acquire()
+        guard = self._guard_for(url)
+        if guard is not None:
+            guard.acquire(self._extract_host(url))
+
+    def _note_response(
+        self,
+        method: str,
+        url: str,
+        response: httpx2.Response,
+        *,
+        inspect_body: bool = False,
+    ) -> float | None:
+        """Feed the host guard with a response; return the ``429`` backoff.
+
+        Args:
+            method: HTTP method of the request.
+            url: Requested URL (selects the host policy).
+            response: The response just received.
+            inspect_body: The body is already loaded, so the HTML maintenance
+                detection may read its first bytes (never true for streams).
+
+        Returns:
+            float | None: Seconds to wait before retrying when the response
+            was a ``429`` of a host with a policy; ``None`` otherwise.
+
+        Raises:
+            MaintenancePageError: A 2xx HTML maintenance page from a host with
+                the circuit breaker enabled.
+        """
+        guard = self._guard_for(url)
         policy = self._policy_for(url)
-        if policy is not None and policy.min_interval > 0:
-            host = self._extract_host(url)
-            with self._lock:
-                if host not in self._host_rate_limiters:
-                    self._host_rate_limiters[host] = RateLimiter(policy.min_interval)
-                limiter = self._host_rate_limiters[host]
-            limiter.acquire()
+        if guard is None or policy is None:
+            return None
+        status = response.status_code
+        if status == 429:
+            raw = response.headers.get("Retry-After")
+            return guard.register_429(_parse_retry_after(raw))
+        if policy.breaker_threshold > 0:
+            down = status in policy.breaker_statuses and method.upper() != "HEAD"
+            maintenance = False
+            if not down and inspect_body and (status >= 500 or status < 300):
+                maintenance = looks_like_maintenance_html(
+                    response.headers.get("Content-Type"), response.content[:4096]
+                )
+            if down or maintenance:
+                guard.register_down()
+                if maintenance and status < 300:
+                    raise MaintenancePageError(str(response.url), status)
+                return None
+        if status < 500:
+            guard.register_ok()
+        return None
 
     @property
     def min_interval(self) -> float:
@@ -525,8 +628,13 @@ class HttpClient:
                     elapsed=f"{elapsed:.3f}s",
                 )
             )
+            backoff = self._note_response(method, url, response, inspect_body=True)
             if response.status_code in RETRY_STATUS_CODES:
-                retry_after = _parse_retry_after(response.headers.get("Retry-After"))
+                retry_after = (
+                    backoff
+                    if backoff is not None
+                    else _parse_retry_after(response.headers.get("Retry-After"))
+                )
                 raise RetryableHttpStatusError(
                     str(response.url), response.status_code, retry_after=retry_after
                 )
@@ -542,6 +650,7 @@ class HttpClient:
             base_delay=self.retry_base_delay,
             jitter=self.jitter,
             retry_exceptions=DEFAULT_RETRY_EXCEPTIONS,
+            sleep=lambda seconds: self._sleep(seconds),
         )
 
     def get(
@@ -1264,9 +1373,12 @@ class HttpClient:
                 method, url, params=params, headers=headers, data=data
             ) as response:  # noqa: E501
                 self.cookies.update(response.cookies)
+                backoff = self._note_response(method, url, response)
                 if response.status_code in RETRY_STATUS_CODES:
                     raw_ra = response.headers.get("Retry-After")
-                    retry_after = _parse_retry_after(raw_ra)
+                    retry_after = (
+                        backoff if backoff is not None else _parse_retry_after(raw_ra)
+                    )
                     raise RetryableHttpStatusError(
                         str(response.url),
                         response.status_code,
@@ -1293,9 +1405,12 @@ class HttpClient:
             ) as client:
                 with client.stream(method, url, params=params, data=data) as response:
                     self.cookies.update(response.cookies)
+                    backoff = self._note_response(method, url, response)
                     if response.status_code in RETRY_STATUS_CODES:
-                        retry_after = _parse_retry_after(
-                            response.headers.get("Retry-After")
+                        retry_after = (
+                            backoff
+                            if backoff is not None
+                            else _parse_retry_after(response.headers.get("Retry-After"))
                         )
                         raise RetryableHttpStatusError(
                             str(response.url),
