@@ -40,6 +40,10 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
   fonte ignora o `$filter` (caso do Ipeadata) em vez de repetir para sempre.
   `http_odata_fetcher` liga o helper ao `HttpClient`; `odata_literal` formata
   os literais.
+- `quantilica.core.lake_profile` (extra `docs`, `pyarrow`): `profile_from_lake(lake_dir, source_id, dataset_id)` lê só os rodapés Parquet e devolve um `LakeProfile` com o documento `perfil` (versão 1: `granularidade`, `periodos`, `linhas` e `colunas.{nome}.nulos`, com `null` para coluna inexistente no período), a lista de colunas da união (`nome`, `dtype_arrow`, `periodo_inicio`, `periodo_fim`) e `perfil_sha256` do JSON canônico. O período vem do caminho Hive (`ano=`/`mes=`); `null_count` e `num_rows` são somados por grupo de linhas e por arquivo do período; as colunas `ano`, `mes`, `uf`, `_origem` e as chaves de partição ficam fora do documento. `derivar_eras(perfil)` agrupa períodos consecutivos com o mesmo conjunto de colunas em `{inicio, fim, n_colunas, entrou, saiu}`. Também `canonical_json`, `perfil_sha256` e `period_from_path`.
+
+### Alterado
+- `schema_from_lake` (e o `<dataset>.schema.json`) passa a trazer `periodo_inicio` e `periodo_fim` por coluna quando o dataset tem partição `ano`; as chaves são opcionais e `check_fetcher_docs` não as usa.
 
 ### Corrigido
 - CI: o `uv sync` do workflow de testes deixa de passar `--index` e `--index-strategy` do índice Quantilica. O pacote não depende de nada que só exista no índice, e o GitHub Pages responde com 503 intermitente quando o caminho não existe, o que derrubava o job.

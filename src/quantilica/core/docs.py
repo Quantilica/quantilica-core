@@ -29,8 +29,10 @@ Formato do ``<dataset_id>.schema.json``::
       "gerado_em": "2026-11-07T12:00:00+00:00",
       "particoes": ["ano", "mes"],
       "colunas": [
-        {"nome": "valor", "tipos": ["double"]},
-        {"nome": "codigo", "tipos": ["int32", "string"]}
+        {"nome": "valor", "tipos": ["double"],
+         "periodo_inicio": "2020-01", "periodo_fim": "2026-08"},
+        {"nome": "codigo", "tipos": ["int32", "string"],
+         "periodo_inicio": "2020-01", "periodo_fim": "2026-08"}
       ],
       "arquivos": 24
     }
@@ -40,6 +42,14 @@ pode variar entre eras ou partições. Os nomes de tipo são os do Arrow
 (``str(pyarrow.DataType)``). ``colunas`` segue a ordem em que as colunas
 aparecem nos arquivos (ordenados por caminho); ``particoes`` são as chaves
 ``chave=valor`` dos diretórios, da mais externa para a mais interna.
+
+``periodo_inicio`` e ``periodo_fim`` (opcionais por coluna) são o primeiro e o
+último período em que a coluna existe nos arquivos, lidos das partições
+``ano=``/``mes=`` do caminho (``"AAAA-MM"`` se há ``mes``, senão ``"AAAA"``).
+Ficam ausentes se o dataset não tem partição ``ano``. Quem lê o esquema deve
+tratar as duas chaves como opcionais; a verificação (``check_fetcher_docs``)
+não as usa. As colunas físicas ``uf`` e ``_origem`` constam no esquema (e levam
+período), ao contrário do documento de :mod:`quantilica.core.lake_profile`.
 
 Regras de verificação (seção 6 da norma), todas erros, exceto onde indicado:
 
@@ -66,6 +76,12 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
+
+from quantilica.core.lake_profile import (
+    import_pyarrow_parquet,
+    lake_parquet_files,
+    period_from_path,
+)
 
 __all__ = [
     "FICHA_MARKER",
@@ -604,33 +620,26 @@ def schema_from_lake(lake_dir: Path | str, source_id: str, dataset_id: str) -> d
     A leitura usa ``pyarrow`` (extra ``docs``), a dependência de Parquet que o
     ecossistema já adota; o ``polars`` não é exigido só para ler esquemas.
     """
-    try:
-        import pyarrow.parquet as pq
-    except ImportError as exc:  # pragma: no cover - depende do ambiente
-        raise ImportError(
-            "schema_from_lake requer o pyarrow. "
-            'Instale com: uv add "quantilica-core[docs]"'
-        ) from exc
+    pq = import_pyarrow_parquet("schema_from_lake")
 
     base = Path(lake_dir) / source_id / dataset_id
     if not base.is_dir():
         raise FileNotFoundError(f"dataset não encontrado no lake: {base}")
 
-    def ignored(rel: Path) -> bool:
-        return any(p.startswith("_") or ".tmp" in p.lower() for p in rel.parts)
-
-    files = sorted(
-        p
-        for p in base.rglob("*.parquet")
-        if p.is_file() and not ignored(p.relative_to(base))
-    )
+    files = lake_parquet_files(base)
     if not files:
         raise FileNotFoundError(f"nenhum arquivo Parquet em {base}")
 
     particoes: list[str] = []
     columns: dict[str, list[str]] = {}
+    periods: dict[str, tuple[str, str]] = {}
     for file in files:
         rel = file.relative_to(base)
+        try:
+            found = period_from_path(rel)
+        except ValueError:
+            found = None
+        period = found[0] if found else None
         for part in rel.parts[:-1]:
             key, sep, _ = part.partition("=")
             if sep and key not in particoes:
@@ -640,13 +649,28 @@ def schema_from_lake(lake_dir: Path | str, source_id: str, dataset_id: str) -> d
             type_name = str(arrow_field.type)
             if type_name not in types:
                 types.append(type_name)
+            if period is not None:
+                first, last = periods.get(arrow_field.name, (period, period))
+                periods[arrow_field.name] = (min(first, period), max(last, period))
     return {
         "fonte": source_id,
         "dataset": dataset_id,
         "gerado_em": datetime.now(UTC).replace(microsecond=0).isoformat(),
         "particoes": particoes,
         "colunas": [
-            {"nome": name, "tipos": sorted(types)} for name, types in columns.items()
+            {
+                "nome": name,
+                "tipos": sorted(types),
+                **(
+                    {
+                        "periodo_inicio": periods[name][0],
+                        "periodo_fim": periods[name][1],
+                    }
+                    if name in periods
+                    else {}
+                ),
+            }
+            for name, types in columns.items()
         ],
         "arquivos": len(files),
     }
