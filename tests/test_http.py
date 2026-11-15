@@ -1150,11 +1150,15 @@ def test_cas_sha256_dedups_against_legacy_file_without_manifest(tmp_path):
 def test_cas_sha256_legacy_file_with_different_sha_versions_normally(tmp_path):
     legacy = tmp_path / "dataset" / "sigtap_202601.zip"
     legacy.parent.mkdir(parents=True)
-    legacy.write_bytes(_zip_bytes(b"antigo"))
-    target, out = _cas_download(tmp_path, _zip_bytes(b"novo conteudo"))
+    # Os bytes do zip levam o horário do membro: gere cada um uma vez só, senão a
+    # comparação falha quando o relógio vira entre as duas chamadas.
+    antigo = _zip_bytes(b"antigo")
+    novo = _zip_bytes(b"novo conteudo")
+    legacy.write_bytes(antigo)
+    target, out = _cas_download(tmp_path, novo)
     assert out == target
-    assert target.read_bytes() == _zip_bytes(b"novo conteudo")
-    assert legacy.read_bytes() == _zip_bytes(b"antigo")
+    assert target.read_bytes() == novo
+    assert legacy.read_bytes() == antigo
 
 
 def test_cas_sha256_legacy_other_key_or_extension_is_not_matched(tmp_path):
