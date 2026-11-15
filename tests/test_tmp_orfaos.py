@@ -126,6 +126,10 @@ def test_pasta_inexistente_nao_falha(tmp_path: Path) -> None:
     assert remove_stale_atomic_temps(tmp_path / "nada" / "a.csv") == []
 
 
+@pytest.mark.skipif(
+    os.utime not in os.supports_follow_symlinks,
+    reason="utime sem follow_symlinks nesta plataforma (Windows)",
+)
 def test_nao_segue_symlink(tmp_path: Path) -> None:
     fora = tmp_path / "fora.bin"
     fora.write_bytes(b"importante")
