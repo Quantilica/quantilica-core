@@ -234,8 +234,8 @@ def _null_count(pf: Any, leaf: dict[str, int], field: Any, groups: range) -> int
     )
 
 
-def _file_stats(pq: Any, file: Path) -> tuple[int, _ColStats, dict[str, str]]:
-    """``(linhas, {coluna: (tipo_arrow, nulos)}, rodapé)`` de um arquivo.
+def _file_stats(pq: Any, file: Path) -> tuple[int, _ColStats, list[str]]:
+    """``(linhas, {coluna: (tipo_arrow, nulos)}, colunas de membro)`` de um arquivo.
 
     Tudo pelo rodapé; só lê dados quando a coluna é aninhada ou o arquivo foi
     escrito sem estatísticas.
@@ -249,19 +249,17 @@ def _file_stats(pq: Any, file: Path) -> tuple[int, _ColStats, dict[str, str]]:
             f.name: (str(f.type), _null_count(pf, leaf, f, everything))
             for f in pf.schema_arrow
         }
-        kv = {
-            k.decode(errors="replace"): v.decode(errors="replace")
-            for k, v in (meta.metadata or {}).items()
-        }
-        return meta.num_rows, out, kv
+        raw = (meta.metadata or {}).get(META_MEMBER_COLUMNS.encode(), b"[]")
+        members = _member_columns(raw.decode(errors="replace"))
+        return meta.num_rows, out, members
     finally:
         pf.close()
 
 
-def _member_columns(kv: Mapping[str, str]) -> list[str]:
-    """Colunas de membro que o rodapé declara (lista vazia se não declara)."""
+def _member_columns(raw: str) -> list[str]:
+    """Colunas de membro de ``quantilica.member_columns`` (``[]`` se ilegível)."""
     try:
-        names = json.loads(kv.get(META_MEMBER_COLUMNS, "[]"))
+        names = json.loads(raw)
     except ValueError:
         return []
     return [n for n in names if isinstance(n, str)] if isinstance(names, list) else []
@@ -317,8 +315,8 @@ def profile_from_lake(
         )
 
     stats = {file: _file_stats(pq, file) for file in files}
-    for _, _, kv in stats.values():
-        excluded.update(_member_columns(kv))
+    for _, _, member_columns in stats.values():
+        excluded.update(member_columns)
 
     grans: set[str] = set()
     by_period: dict[str, list[tuple[int, _ColStats]]] = {}
