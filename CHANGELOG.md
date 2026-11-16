@@ -7,6 +7,8 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+
+## [0.25.0] - 2026-11-16
 ### Adicionado
 
 - `HttpClient.share_host_state(outro)`: o cliente passa a usar as políticas por host, o limitador de intervalo mínimo, os guardas (pausa de `429`, disjuntor) e os semáforos de `max_concurrency` de `outro`. Serve aos clientes por thread de um download paralelo, que mantêm cada um o seu pool de conexões mas obedecem a um só ritmo por host (antes, N clientes mandavam N vezes o ritmo configurado).
