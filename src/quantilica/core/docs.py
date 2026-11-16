@@ -63,10 +63,14 @@ Regras de verificação (seção 6 da norma), todas erros, exceto onde indicado:
 - com ``lake.estado == convertido``: ``<id>.schema.json`` ausente, partições do
   cabeçalho diferentes das do esquema, dicionário de variáveis (tabela cuja
   primeira coluna é "Coluna no lake") que não cobre exatamente as colunas do
-  esquema (colunas de partição não precisam constar);
-- **aviso**: o esquema tem coluna numérica que não é chave nem partição e
-  ``unidades_de_medida`` não a menciona (ou está vazio); e ``lake.colunas`` do
-  cabeçalho diferente do número de colunas do esquema.
+  esquema (colunas de partição não precisam constar). O nome é comparado
+  exato: espaço nas pontas do nome da coluna faz parte dele, e a página o
+  escreve entre crases (``` ` NOME ` ```);
+- **aviso**: o dicionário escreve aparado (sem os espaços das pontas) o nome de
+  uma coluna que os tem, e o aviso traz o nome exato esperado; o esquema tem
+  coluna numérica que não é chave nem partição e ``unidades_de_medida`` não a
+  menciona (ou está vazio); e ``lake.colunas`` do cabeçalho diferente do número
+  de colunas do esquema.
 """
 
 from __future__ import annotations
@@ -489,11 +493,26 @@ def _split_row(line: str) -> list[str]:
     return [c.strip() for c in re.split(r"(?<!\\)\|", line)]
 
 
+def _variable_name(cell: str) -> str:
+    """Nome de coluna escrito na primeira célula da tabela de variáveis.
+
+    Nome entre crases vale **literalmente**: o texto entre a primeira e a última
+    crase, com os espaços das pontas, que são parte do nome real da coluna no
+    Parquet (``` ` NOME ` ``` é ``" NOME "``). Os espaços de fora das crases são
+    o enchimento da tabela e saem. Sem crases, o nome é a célula aparada.
+    """
+    cell = cell.strip()
+    if len(cell) >= 2 and cell.startswith("`") and cell.endswith("`"):
+        return cell[1:-1]
+    return cell.strip("`").strip()
+
+
 def parse_variables_table(text: str) -> list[str] | None:
     """Nomes da primeira coluna da tabela "Coluna no lake" da seção Variáveis.
 
-    Crases em volta do nome são removidas. ``None`` se a seção ou a tabela não
-    existir.
+    As crases em volta do nome são removidas e o que está entre elas é o nome
+    exato, inclusive com espaço nas pontas (``` ` NOME ` ``` devolve
+    ``" NOME "``). ``None`` se a seção ou a tabela não existir.
     """
     body = _section_body(text, "Variáveis")
     if body is None:
@@ -512,7 +531,7 @@ def parse_variables_table(text: str) -> list[str] | None:
         first = cells[0] if cells else ""
         if re.fullmatch(r":?-{2,}:?", first.replace(" ", "")):
             continue
-        name = first.strip().strip("`").strip()
+        name = _variable_name(first)
         if name:
             names.append(name)
     return names
@@ -721,6 +740,34 @@ def _load_schema(path: Path) -> tuple[dict | None, str | None]:
     return data, None
 
 
+def _match_trimmed_names(
+    documented: list[str], expected: list[str]
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Casa nomes aparados da página com colunas do esquema que têm espaço nas pontas.
+
+    A comparação é pelo nome exato. Só o que sobra sem par exato é comparado de
+    novo ignorando os espaços das pontas: cada nome da página casa com no máximo
+    uma coluna do esquema (e vice-versa), na ordem. Devolve a lista documentada
+    com esses nomes trocados pelo nome exato e os pares ``(escrito, exato)`` para
+    o aviso.
+    """
+    free = [c for c in expected if c not in documented]
+    result: list[str] = []
+    trimmed: list[tuple[str, str]] = []
+    for name in documented:
+        if name in expected:
+            result.append(name)
+            continue
+        match = next((c for c in free if c.strip() == name.strip()), None)
+        if match is None:
+            result.append(name)
+            continue
+        free.remove(match)
+        result.append(match)
+        trimmed.append((name, match))
+    return result, trimmed
+
+
 def check_fetcher_docs(
     docs_dir: Path | str, datasets: Iterable[str], source_id: str
 ) -> list[DocProblem]:
@@ -826,6 +873,15 @@ def check_fetcher_docs(
         else:
             parts = set(schema["particoes"]) | set(header.lake_particoes)
             expected = [c for c in schema_cols if c not in parts]
+            documented, trimmed = _match_trimmed_names(documented, expected)
+            for written, exact in trimmed:
+                warn(
+                    rel,
+                    f"variável {written!r} escrita sem os espaços das pontas: o "
+                    f"nome exato da coluna no lake é {exact!r}; escreva "
+                    f"`{exact}` (entre crases, com os espaços) na tabela de "
+                    "variáveis",
+                )
             absent = [c for c in expected if c not in documented]
             extra = [c for c in documented if c not in schema_cols and c not in parts]
             if absent:

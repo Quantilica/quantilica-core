@@ -6,6 +6,9 @@ O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
+### Corrigido
+- `check_fetcher_docs`/`parse_variables_table`: nome de coluna com espaço nas pontas (o nome real da coluna no Parquet, como em alguns datasets de anac, inep, anp e datasus) passa a ser comparado exato. Na tabela de variáveis o nome vai entre crases e o texto entre elas vale literalmente (`` ` NOME ` `` é `" NOME "`); os espaços de fora das crases continuam sendo só o enchimento da tabela. Antes a célula era aparada e o check acusava divergência que não existia. Página antiga que escreve o nome aparado deixa de gerar erro e passa a gerar um **aviso** com o nome exato esperado.
+
 ### Alterado
 - Verificação de tipos com `pyright` (`[tool.pyright]`, modo `basic`) zerada em `src`; `parse_ftp_list_line` devolve `None` para mês desconhecido em vez de `TypeError`.
 

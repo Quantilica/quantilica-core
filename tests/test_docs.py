@@ -159,6 +159,26 @@ def test_variables_table_strips_backticks(tmp_path: Path) -> None:
     assert parse_variables_table(page()) == ["id_venda", "valor", "uf"]
 
 
+def test_variables_table_keeps_exact_name_between_backticks() -> None:
+    variables = VARS + (
+        "| ` ESQ` | A | int | a | | |\n"
+        "| `DIR ` | B | int | b | | |\n"
+        "| ` AMBOS ` | C | int | c | | |\n"
+        "| `  ` | D | int | d | | |\n"
+        "| SEM_CRASE | E | int | e | | |\n"
+    )
+    assert parse_variables_table(page(variables=variables)) == [
+        "id_venda",
+        "valor",
+        "uf",
+        " ESQ",
+        "DIR ",
+        " AMBOS ",
+        "  ",
+        "SEM_CRASE",
+    ]
+
+
 # --- regras de erro -------------------------------------------------------------
 
 
@@ -382,3 +402,82 @@ def test_write_schema_keeps_file_when_unchanged(tmp_path: Path) -> None:
     assert write_schema(path, again) is False
     assert json.loads(path.read_text(encoding="utf-8"))["gerado_em"].startswith("2026")
     assert write_schema(path, {**again, "arquivos": 9}) is True
+
+
+# --- nomes de coluna com espaço nas pontas ---------------------------------------
+
+
+VARS_2 = VARS.replace("| `uf` | UF | string | estado | | |\n", "")
+
+
+def schema_with(*names: str) -> dict:
+    """Esquema de referência com estas colunas (o cabeçalho declara 3)."""
+    return {
+        **SCHEMA,
+        "colunas": [{"nome": n, "tipos": ["string"]} for n in names],
+    }
+
+
+@pytest.mark.parametrize("name", [" ESQ", "DIR ", " AMBOS ", "  DOIS  "])
+def test_dictionary_with_exact_name_has_no_problems(tmp_path: Path, name: str) -> None:
+    variables = f"{VARS_2}| `{name}` | X | string | x | | |\n"
+    docs = make_docs(
+        tmp_path,
+        page(variables=variables),
+        schema_with("id_venda", "valor", name),
+    )
+    assert check_fetcher_docs(docs, ["vendas"], "alfa") == []
+
+
+@pytest.mark.parametrize("name", [" ESQ", "DIR ", " AMBOS "])
+def test_trimmed_name_in_old_page_warns_with_exact_name(
+    tmp_path: Path, name: str
+) -> None:
+    variables = f"{VARS_2}| `{name.strip()}` | X | string | x | | |\n"
+    docs = make_docs(
+        tmp_path,
+        page(variables=variables),
+        schema_with("id_venda", "valor", name),
+    )
+    problems = check_fetcher_docs(docs, ["vendas"], "alfa")
+    assert messages(problems) == ""  # aviso, não erro
+    warning = messages(problems, "warning")
+    assert f"{name.strip()!r} escrita sem os espaços" in warning
+    assert f"é {name!r}" in warning
+    assert f"`{name}`" in warning
+    assert_fetcher_docs(docs, ["vendas"], "alfa")
+
+
+def test_trimmed_name_does_not_hide_a_missing_column(tmp_path: Path) -> None:
+    # esquema tem " ESQ" e "outra"; a página aparou " ESQ" e não tem "outra"
+    variables = f"{VARS_2}| `ESQ` | X | string | x | | |\n"
+    docs = make_docs(
+        tmp_path,
+        page(variables=variables),
+        schema_with("id_venda", "valor", " ESQ", "outra"),
+    )
+    problems = check_fetcher_docs(docs, ["vendas"], "alfa")
+    assert "fora do dicionário: outra" in messages(problems)
+    assert "ESQ" not in messages(problems)
+    assert "escrita sem os espaços" in messages(problems, "warning")
+
+
+def test_exact_names_take_precedence_over_trimmed_match(tmp_path: Path) -> None:
+    # colunas "A" e " A": a página escreve as duas exatas, sem aviso
+    variables = f"{VARS_2}| `A` | X | string | x | | |\n| ` A` | X | string | x | | |\n"
+    docs = make_docs(
+        tmp_path,
+        page(variables=variables),
+        schema_with("id_venda", "valor", "A", " A"),
+    )
+    problems = check_fetcher_docs(docs, ["vendas"], "alfa")
+    assert messages(problems) == ""
+    assert "escrita sem os espaços" not in messages(problems, "warning")
+
+
+def test_unknown_name_with_spaces_is_still_an_error(tmp_path: Path) -> None:
+    variables = f"{VARS}| ` OUTRA ` | X | string | x | | |\n"
+    docs = make_docs(tmp_path, page(variables=variables))
+    assert "não estão no esquema:  OUTRA " in messages(
+        check_fetcher_docs(docs, ["vendas"], "alfa")
+    )
