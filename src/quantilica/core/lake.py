@@ -328,15 +328,17 @@ def dataset_lock(dataset_dir: Path, *, blocking: bool = True) -> Iterator[None]:
         with _msvcrt_lock(Path(dataset_dir), blocking=blocking):
             yield
         return
+    # POSIX-only module: typed as Any so pyright on Windows accepts it.
+    posix: Any = fcntl
     directory = Path(dataset_dir)
     directory.mkdir(parents=True, exist_ok=True)
     with (directory / LOCK_FILENAME).open("a+") as handle:
-        flags = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
-        fcntl.flock(handle.fileno(), flags)
+        flags = posix.LOCK_EX if blocking else posix.LOCK_EX | posix.LOCK_NB
+        posix.flock(handle.fileno(), flags)
         try:
             yield
         finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            posix.flock(handle.fileno(), posix.LOCK_UN)
 
 
 @contextmanager
