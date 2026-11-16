@@ -98,8 +98,9 @@ __all__ = [
 PROFILE_VERSION = 1
 EXCLUDED_COLUMNS = ("ano", "mes", "uf", "_origem")
 
-_HIVE_PART = re.compile(r"^([^=/]+)=(.*)$")
-_COMPETENCIA = re.compile(r"^(\d{4})(\d{2})$")
+_HIVE_PART = re.compile(r"([^=/]+)=(.*)\Z", re.DOTALL)  # o \n final fica no valor
+_COMPETENCIA = re.compile(r"([0-9]{4})([0-9]{2})")
+_INTEIRO = re.compile(r"[0-9]+")
 _SUBPERIOD_KEYS = ("semestre", "trimestre", "mes", "dia")
 GRANULARIDADES = ("anual", "semestral", "trimestral", "mensal", "diaria")
 META_MEMBER_COLUMNS = "quantilica.member_columns"
@@ -154,10 +155,11 @@ def perfil_sha256(perfil: Mapping[str, Any]) -> str:
 
 
 def _int_key(keys: Mapping[str, str], name: str, rel: Path | str) -> int:
-    try:
-        return int(keys[name])
-    except ValueError as exc:
-        raise ValueError(f"partição {name}= inválida em {rel}") from exc
+    """Valor inteiro de uma chave Hive: só dígitos ASCII (nada de ``+3``, ``1_1``)."""
+    valor = keys[name]
+    if not _INTEIRO.fullmatch(valor):
+        raise ValueError(f"partição {name}= inválida em {rel}")
+    return int(valor)
 
 
 def period_from_path(rel: Path | str) -> tuple[str, str] | None:
@@ -171,11 +173,12 @@ def period_from_path(rel: Path | str) -> tuple[str, str] | None:
     - ``ano=`` + ``mes=`` (1-12) ou ``competencia=AAAAMM``: ``AAAA-MM``, ``mensal``;
     - ``ano=`` + ``mes=`` + ``dia=``: ``AAAA-MM-DD``, ``diaria``.
 
-    ``competencia=`` só vale sem ``ano=``; com ``ano=`` e ``competencia=`` no
-    mesmo caminho vale o ``ano=``. Valores inválidos (fora da faixa, ``dia``
-    inexistente no mês, não numéricos), ``dia=`` sem ``mes=`` e combinações
-    ambíguas (por exemplo ``semestre=`` com ``trimestre=``) levantam
-    ``ValueError``. Dentro de cada granularidade a ordem lexicográfica do
+    ``competencia=`` só vale sem ``ano=`` e sem ``semestre=``/``trimestre=``/
+    ``dia=`` (``ValueError``); os inteiros são só dígitos ASCII. Com ``ano=`` e
+    ``competencia=`` no mesmo caminho vale o ``ano=``. Valores inválidos (fora da
+    faixa, ``dia`` inexistente no mês, não numéricos), ``dia=`` sem ``mes=`` e
+    combinações ambíguas (por exemplo ``semestre=`` com ``trimestre=``)
+    levantam ``ValueError``. Dentro de cada granularidade a ordem lexicográfica do
     período é a cronológica.
     """
     parts = Path(rel).parts[:-1]
@@ -187,10 +190,16 @@ def period_from_path(rel: Path | str) -> tuple[str, str] | None:
     if "ano" not in keys:
         if "competencia" not in keys:
             return None
-        m = _COMPETENCIA.match(keys["competencia"])
+        extra = sorted(k for k in ("semestre", "trimestre", "dia") if k in keys)
+        if extra:
+            raise ValueError(
+                f"partições de período incompatíveis em {rel}: competencia, "
+                f"{', '.join(extra)}"
+            )
+        m = _COMPETENCIA.fullmatch(keys["competencia"])
         if m is None or not 1 <= int(m.group(2)) <= 12:
             raise ValueError(f"competencia inválida em {rel}")
-        return f"{int(m.group(1)):04d}-{m.group(2)}", "mensal"
+        return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}", "mensal"
     ano = _int_key(keys, "ano", rel)
     if not 0 <= ano <= 9999:
         raise ValueError(f"ano fora de 0-9999 em {rel}")

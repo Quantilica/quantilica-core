@@ -267,6 +267,47 @@ def test_period_from_path_invalido(rel: str) -> None:
         period_from_path(rel)
 
 
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "ano=+2024/x.parquet",
+        "ano=2024/mes=+3/x.parquet",
+        "ano=2024/mes=1_1/x.parquet",
+        "ano=2024/trimestre= 1/x.parquet",
+        "ano=2024/semestre=1 /x.parquet",
+        "ano=2024/mes=3/dia=\u0661/x.parquet",  # dígito arábico-índico
+        "ano=\uff12\uff10\uff12\uff14/x.parquet",  # largura total
+        "ano=-2024/x.parquet",
+        "ano=2024/mes=/x.parquet",
+        "competencia=2024\uff10\uff11/x.parquet",
+        "competencia=+20241/x.parquet",
+        "competencia=202401\n/x.parquet",
+    ],
+)
+def test_period_from_path_so_digitos_ascii(rel: str) -> None:
+    with pytest.raises(ValueError):
+        period_from_path(rel)
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "competencia=202401/semestre=1/x.parquet",
+        "competencia=202401/trimestre=1/x.parquet",
+        "competencia=202401/dia=5/x.parquet",
+        "competencia=202401/trimestre=1/dia=5/x.parquet",
+    ],
+)
+def test_competencia_com_outras_particoes_de_periodo_e_erro(rel: str) -> None:
+    with pytest.raises(ValueError, match="incompatíveis"):
+        period_from_path(rel)
+
+
+def test_competencia_normaliza_mes_e_ano() -> None:
+    assert period_from_path("competencia=202401/x.parquet") == ("2024-01", "mensal")
+    assert period_from_path("competencia=000512/x.parquet") == ("0005-12", "mensal")
+
+
 def test_ordem_lexicografica_e_cronologica() -> None:
     for gran, rels in {
         "semestral": [
