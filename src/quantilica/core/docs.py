@@ -66,8 +66,9 @@ Regras de verificação (seção 6 da norma), todas erros, exceto onde indicado:
   esquema (colunas de partição não precisam constar). O nome é comparado
   exato: espaço nas pontas do nome da coluna faz parte dele, e a página o
   escreve entre crases (``` ` NOME ` ```);
-- **aviso**: o dicionário escreve aparado (sem os espaços das pontas) o nome de
-  uma coluna que os tem, e o aviso traz o nome exato esperado; o esquema tem
+- **aviso**: o dicionário escreve um nome que só difere do da coluna do esquema
+  nos espaços das pontas (aparado, por exemplo), e o aviso traz o nome exato
+  esperado; o esquema tem
   coluna numérica que não é chave nem partição e ``unidades_de_medida`` não a
   menciona (ou está vazio); e ``lake.colunas`` do cabeçalho diferente do número
   de colunas do esquema.
@@ -741,28 +742,33 @@ def _load_schema(path: Path) -> tuple[dict | None, str | None]:
 
 
 def _match_trimmed_names(
-    documented: list[str], expected: list[str]
+    documented: list[str], schema_cols: list[str]
 ) -> tuple[list[str], list[tuple[str, str]]]:
-    """Casa nomes aparados da página com colunas do esquema que têm espaço nas pontas.
+    """Casa nomes da página que só diferem de uma coluna do esquema nos espaços.
 
-    A comparação é pelo nome exato. Só o que sobra sem par exato é comparado de
-    novo ignorando os espaços das pontas: cada nome da página casa com no máximo
-    uma coluna do esquema (e vice-versa), na ordem. Devolve a lista documentada
-    com esses nomes trocados pelo nome exato e os pares ``(escrito, exato)`` para
-    o aviso.
+    A comparação é pelo nome exato. Um nome da página sem par exato é comparado
+    de novo ignorando os espaços das pontas (nos dois lados): o nome escrito
+    aparado de uma coluna que tem espaços, ou o nome com espaços de uma coluna
+    cujo esquema está aparado. Havendo mais de uma coluna candidata, vale a que
+    a página ainda não cobre exatamente. Devolve a lista documentada com esses
+    nomes trocados pelo nome exato do esquema e os pares ``(escrito, exato)``
+    para o aviso.
     """
-    free = [c for c in expected if c not in documented]
+    free = [c for c in schema_cols if c not in documented]
     result: list[str] = []
     trimmed: list[tuple[str, str]] = []
     for name in documented:
-        if name in expected:
+        if name in schema_cols:
             result.append(name)
             continue
-        match = next((c for c in free if c.strip() == name.strip()), None)
-        if match is None:
+        key = name.strip()
+        candidates = [c for c in schema_cols if c.strip() == key]
+        if not candidates:
             result.append(name)
             continue
-        free.remove(match)
+        match = next((c for c in candidates if c in free), candidates[0])
+        if match in free:
+            free.remove(match)
         result.append(match)
         trimmed.append((name, match))
     return result, trimmed
@@ -873,13 +879,13 @@ def check_fetcher_docs(
         else:
             parts = set(schema["particoes"]) | set(header.lake_particoes)
             expected = [c for c in schema_cols if c not in parts]
-            documented, trimmed = _match_trimmed_names(documented, expected)
+            documented, trimmed = _match_trimmed_names(documented, schema_cols)
             for written, exact in trimmed:
                 warn(
                     rel,
-                    f"variável {written!r} escrita sem os espaços das pontas: o "
-                    f"nome exato da coluna no lake é {exact!r}; escreva "
-                    f"`{exact}` (entre crases, com os espaços) na tabela de "
+                    f"variável {written!r} difere do nome exato da coluna no lake, "
+                    f"{exact!r}, só pelos espaços das pontas; escreva `{exact}` "
+                    "(entre crases, sem espaço a mais ou a menos) na tabela de "
                     "variáveis",
                 )
             absent = [c for c in expected if c not in documented]

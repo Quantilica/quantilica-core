@@ -442,8 +442,8 @@ def test_trimmed_name_in_old_page_warns_with_exact_name(
     problems = check_fetcher_docs(docs, ["vendas"], "alfa")
     assert messages(problems) == ""  # aviso, não erro
     warning = messages(problems, "warning")
-    assert f"{name.strip()!r} escrita sem os espaços" in warning
-    assert f"é {name!r}" in warning
+    assert f"{name.strip()!r} difere do nome exato" in warning
+    assert f"coluna no lake, {name!r}," in warning
     assert f"`{name}`" in warning
     assert_fetcher_docs(docs, ["vendas"], "alfa")
 
@@ -459,7 +459,7 @@ def test_trimmed_name_does_not_hide_a_missing_column(tmp_path: Path) -> None:
     problems = check_fetcher_docs(docs, ["vendas"], "alfa")
     assert "fora do dicionário: outra" in messages(problems)
     assert "ESQ" not in messages(problems)
-    assert "escrita sem os espaços" in messages(problems, "warning")
+    assert "difere do nome exato" in messages(problems, "warning")
 
 
 def test_exact_names_take_precedence_over_trimmed_match(tmp_path: Path) -> None:
@@ -472,7 +472,7 @@ def test_exact_names_take_precedence_over_trimmed_match(tmp_path: Path) -> None:
     )
     problems = check_fetcher_docs(docs, ["vendas"], "alfa")
     assert messages(problems) == ""
-    assert "escrita sem os espaços" not in messages(problems, "warning")
+    assert "difere do nome exato" not in messages(problems, "warning")
 
 
 def test_unknown_name_with_spaces_is_still_an_error(tmp_path: Path) -> None:
@@ -481,3 +481,35 @@ def test_unknown_name_with_spaces_is_still_an_error(tmp_path: Path) -> None:
     assert "não estão no esquema:  OUTRA " in messages(
         check_fetcher_docs(docs, ["vendas"], "alfa")
     )
+
+
+@pytest.mark.parametrize("written", [" Bônus ", "Bônus ", " Bônus"])
+def test_spaced_name_in_page_with_trimmed_schema_warns(
+    tmp_path: Path, written: str
+) -> None:
+    # esquema aparado, página com espaços: a diferença é só de espaços
+    variables = f"{VARS_2}| `{written}` | X | string | x | | |\n"
+    docs = make_docs(
+        tmp_path,
+        page(variables=variables),
+        schema_with("id_venda", "valor", "Bônus"),
+    )
+    problems = check_fetcher_docs(docs, ["vendas"], "alfa")
+    assert messages(problems) == ""
+    warning = messages(problems, "warning")
+    assert f"{written!r} difere do nome exato da coluna no lake, 'Bônus'," in warning
+    assert "escreva `Bônus`" in warning
+
+
+def test_several_spaced_variants_of_one_column_all_warn(tmp_path: Path) -> None:
+    variables = (
+        f"{VARS_2}| `X ` | X | string | x | | |\n| ` X` | X | string | x | | |\n"
+    )
+    docs = make_docs(
+        tmp_path,
+        page(variables=variables),
+        schema_with("id_venda", "valor", "X"),
+    )
+    problems = check_fetcher_docs(docs, ["vendas"], "alfa")
+    assert messages(problems) == ""
+    assert messages(problems, "warning").count("difere do nome exato") == 2
