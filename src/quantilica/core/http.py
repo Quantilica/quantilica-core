@@ -167,6 +167,12 @@ class HostPolicy:
     statuses (or ``403``) is neutral: servers often refuse ``HEAD`` while
     serving ``GET``. ``detect_maintenance_html=False`` keeps only the
     status-based signal. ``stream()`` never inspects the body.
+
+    ``max_concurrency`` caps the simultaneous requests to the host, for
+    ``request()`` and ``stream()`` alike (a stream holds its slot until the
+    ``with`` block ends). ``0`` disables the cap. Clients that must obey one
+    shared policy (the per-thread clients of a parallel download) adopt each
+    other's state with :meth:`HttpClient.share_host_state`.
     """
 
     min_interval: float = 1.0
@@ -434,6 +440,7 @@ class HttpClient:
         self._sleep: Callable[[float], None] = time.sleep
         self._clock: Callable[[], float] = time.monotonic
         self._host_semaphores: dict[str, threading.BoundedSemaphore] = {}
+        self._host_slots_held = threading.local()
         self._lock = threading.Lock()
         self._client: httpx2.Client | None = None
 
@@ -468,6 +475,75 @@ class HttpClient:
                 )
                 self._host_guards[host] = guard
         return guard
+
+    def share_host_state(self, other: HttpClient) -> HttpClient:
+        """Share the per-host traffic state of ``other`` with this client.
+
+        After the call both clients answer to the *same* host policies,
+        pacing, ``429`` backoff, circuit breaker and ``max_concurrency``
+        semaphore, so the rhythm is the host's, not each client's. Use it for
+        the per-thread clients of a parallel download, which keep their own
+        connection pool but must not multiply the traffic the host sees.
+
+        Only the traffic state is shared (``host_policies``, the minimum
+        interval limiter, the host guards and semaphores); timeouts, headers,
+        cookies and the connection pool stay independent.
+
+        Args:
+            other: The client whose traffic state is adopted.
+
+        Returns:
+            HttpClient: ``self``, for chaining.
+        """
+        self.host_policies = other.host_policies
+        self._rate_limiter = other._rate_limiter
+        self._host_guards = other._host_guards
+        self._host_semaphores = other._host_semaphores
+        self._host_slots_held = other._host_slots_held
+        self._lock = other._lock
+        return self
+
+    @contextlib.contextmanager
+    def _host_slot(self, url: str):
+        """Hold one of the ``max_concurrency`` slots of the host of ``url``.
+
+        A no-op for hosts without policy (or ``max_concurrency <= 0``). It is
+        taken *before* the pacing token, so the spacing between requests is
+        counted from the moment a request is really allowed to start, and it
+        is released on any exit of the block (exception, abandoned stream).
+
+        Re-entrant per thread: a thread that already holds the slot of a host
+        (a ``stream()`` body that calls ``get()`` on the same host) does not
+        take a second one, which would deadlock with ``max_concurrency=1``.
+        """
+        policy = self._policy_for(url)
+        if policy is None or policy.max_concurrency <= 0:
+            yield
+            return
+        host = self._extract_host(url)
+        held: dict[str, int] | None = getattr(self._host_slots_held, "hosts", None)
+        if held is None:
+            held = self._host_slots_held.hosts = {}
+        if held.get(host, 0) > 0:
+            held[host] += 1
+            try:
+                yield
+            finally:
+                held[host] -= 1
+            return
+        with self._lock:
+            semaphore = self._host_semaphores.get(host)
+            if semaphore is None:
+                semaphore = self._host_semaphores[host] = threading.BoundedSemaphore(
+                    policy.max_concurrency
+                )
+        semaphore.acquire()
+        held[host] = 1
+        try:
+            yield
+        finally:
+            held[host] = 0
+            semaphore.release()
 
     def _acquire_rate_limits(self, url: str) -> int | None:
         """Pace the request; return the half-open probe ticket, if it is one."""
@@ -625,16 +701,6 @@ class HttpClient:
 
         def attempt(ticket: int | None) -> httpx2.Response:
             policy = self._policy_for(url)
-            semaphore = None
-            if policy is not None and policy.max_concurrency > 0:
-                host = self._extract_host(url)
-                with self._lock:
-                    if host not in self._host_semaphores:
-                        self._host_semaphores[host] = threading.BoundedSemaphore(
-                            policy.max_concurrency
-                        )
-                    semaphore = self._host_semaphores[host]
-
             start = time.perf_counter()
             start_mono = time.monotonic()
             client, is_persistent = self._get_client()
@@ -656,19 +722,13 @@ class HttpClient:
                         f"Too many redirects for {url} (limit: {limit})"
                     ) from exc
 
-            if semaphore is not None:
-                semaphore.acquire()
-            try:
-                if is_persistent:
-                    response = _send(client)
+            if is_persistent:
+                response = _send(client)
+                self.cookies.update(response.cookies)
+            else:
+                with client as c:
+                    response = _send(c)
                     self.cookies.update(response.cookies)
-                else:
-                    with client as c:
-                        response = _send(c)
-                        self.cookies.update(response.cookies)
-            finally:
-                if semaphore is not None:
-                    semaphore.release()
 
             if policy is not None and policy.deadline is not None:
                 if (time.monotonic() - start_mono) > policy.deadline:
@@ -705,13 +765,15 @@ class HttpClient:
             return response
 
         def do_request() -> httpx2.Response:
-            ticket = self._acquire_rate_limits(url)
-            try:
-                return attempt(ticket)
-            finally:
-                # A half-open probe that ended in 5xx, 429 or a network error
-                # never reported: count it as a failure, free the slot.
-                self._settle_probe(url, ticket)
+            with self._host_slot(url):
+                ticket = self._acquire_rate_limits(url)
+                try:
+                    return attempt(ticket)
+                finally:
+                    # A half-open probe that ended in 5xx, 429 or a network
+                    # error never reported: count it as a failure, free the
+                    # slot.
+                    self._settle_probe(url, ticket)
 
         return retry_call(
             do_request,
@@ -794,28 +856,29 @@ class HttpClient:
         def _stream_fallback() -> httpx2.Response:
             # Through the host guard: the GET that follows a refused HEAD is
             # what tells whether the host is really down.
-            ticket = self._acquire_rate_limits(url)
-            try:
-                with httpx2.Client(
-                    timeout=self.timeout,
-                    follow_redirects=self.follow_redirects,
-                    headers=request_headers,
-                    verify=self.verify,
-                    transport=self.transport,
-                    cookies=self.cookies,
-                ) as client:
-                    with client.stream("GET", url, params=params) as response:
-                        self.cookies.update(response.cookies)
-                        self._note_response("GET", url, response, ticket=ticket)
-                        try:
-                            response.raise_for_status()
-                        except httpx2.HTTPStatusError as exc:
-                            raise HttpStatusError(
-                                str(response.url), response.status_code
-                            ) from exc
-                        return response
-            finally:
-                self._settle_probe(url, ticket)
+            with self._host_slot(url):
+                ticket = self._acquire_rate_limits(url)
+                try:
+                    with httpx2.Client(
+                        timeout=self.timeout,
+                        follow_redirects=self.follow_redirects,
+                        headers=request_headers,
+                        verify=self.verify,
+                        transport=self.transport,
+                        cookies=self.cookies,
+                    ) as client:
+                        with client.stream("GET", url, params=params) as response:
+                            self.cookies.update(response.cookies)
+                            self._note_response("GET", url, response, ticket=ticket)
+                            try:
+                                response.raise_for_status()
+                            except httpx2.HTTPStatusError as exc:
+                                raise HttpStatusError(
+                                    str(response.url), response.status_code
+                                ) from exc
+                            return response
+                finally:
+                    self._settle_probe(url, ticket)
 
         return retry_call(
             _stream_fallback,
@@ -1445,15 +1508,25 @@ class HttpClient:
             The body is not read here, so ``stream()`` feeds the host guard
             with the status only (``429``, ``breaker_statuses``) and never
             runs the HTML maintenance-page detection.
+
+            For a host with a :class:`HostPolicy`, the ``max_concurrency``
+            slot is held until the ``with`` block ends (the whole body), and
+            is released even if the block raises or is abandoned.
         """
-        ticket = self._acquire_rate_limits(url)
-        try:
-            with self._stream_response(
-                method, url, params=params, headers=headers, data=data, ticket=ticket
-            ) as response:
-                yield response
-        finally:
-            self._settle_probe(url, ticket)
+        with self._host_slot(url):
+            ticket = self._acquire_rate_limits(url)
+            try:
+                with self._stream_response(
+                    method,
+                    url,
+                    params=params,
+                    headers=headers,
+                    data=data,
+                    ticket=ticket,
+                ) as response:
+                    yield response
+            finally:
+                self._settle_probe(url, ticket)
 
     @contextlib.contextmanager
     def _stream_response(

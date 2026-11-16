@@ -7,6 +7,15 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+### Adicionado
+
+- `HttpClient.share_host_state(outro)`: o cliente passa a usar as políticas por host, o limitador de intervalo mínimo, os guardas (pausa de `429`, disjuntor) e os semáforos de `max_concurrency` de `outro`. Serve aos clientes por thread de um download paralelo, que mantêm cada um o seu pool de conexões mas obedecem a um só ritmo por host (antes, N clientes mandavam N vezes o ritmo configurado).
+
+### Corrigido
+
+- `HostPolicy.max_concurrency` vale também em `HttpClient.stream()` (e, portanto, em `download_with_manifest`, `get_bytes` e no `GET` de `head_or_get`): a vaga fica presa até o fim do bloco `with`, é devolvida em qualquer saída (exceção, status de erro, gerenciador abandonado) e não trava uma chamada aninhada da mesma thread ao mesmo host. Antes só `request()` aplicava o teto.
+- Com política por host, a vaga de `max_concurrency` passa a ser tomada **antes** da ficha do ritmo (em `request()` era depois): o intervalo mínimo é contado a partir do momento em que a requisição pode de fato sair, e requisições que esperavam a vaga já não saem em rajada. Sem política, nada muda.
+
 
 ## [0.24.0] - 2026-11-15
 ### Adicionado
