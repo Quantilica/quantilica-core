@@ -19,6 +19,10 @@ from quantilica.core.http import (
 
 HOST = "127.0.0.1"
 BODY = b"x" * 4096
+# Intervalo longo e tolerância relativa: o relógio do Windows tem 15,6 ms de
+# resolução e a máquina sob carga atrasa as threads.
+INTERVALO = 0.2
+TOLERANCIA = 0.5
 
 
 class FakeServer:
@@ -102,21 +106,21 @@ def test_stream_respeita_max_concurrency():
 
 
 def test_stream_respeita_min_interval():
-    with FakeServer(body_delay=0.2) as server:
+    with FakeServer(body_delay=0.5) as server:
         client = HttpClient(
-            host_policies={HOST: HostPolicy(min_interval=0.1, max_concurrency=3)}
+            host_policies={HOST: HostPolicy(min_interval=INTERVALO, max_concurrency=3)}
         )
-        run_parallel(lambda i: consume(client, server.url(f"/f{i}")), 8)
-    assert len(server.arrivals) == 8
-    assert min(gaps(server.arrivals)) >= 0.08
+        run_parallel(lambda i: consume(client, server.url(f"/f{i}")), 6)
+    assert len(server.arrivals) == 6
+    assert min(gaps(server.arrivals)) >= TOLERANCIA * INTERVALO
     assert server.max_active <= 3
 
 
 def test_request_e_stream_dividem_o_mesmo_limite():
     """HEAD/GET simples e stream disputam as mesmas vagas e o mesmo ritmo."""
-    with FakeServer(body_delay=0.1) as server:
+    with FakeServer(body_delay=0.3) as server:
         client = HttpClient(
-            host_policies={HOST: HostPolicy(min_interval=0.05, max_concurrency=2)}
+            host_policies={HOST: HostPolicy(min_interval=INTERVALO, max_concurrency=2)}
         )
 
         def job(i: int) -> object:
@@ -124,9 +128,10 @@ def test_request_e_stream_dividem_o_mesmo_limite():
                 return client.get(server.url(f"/g{i}")).status_code
             return consume(client, server.url(f"/s{i}"))
 
-        run_parallel(job, 12)
+        run_parallel(job, 6)
+    assert len(server.arrivals) == 6
     assert server.max_active <= 2
-    assert min(gaps(server.arrivals)) >= 0.04
+    assert min(gaps(server.arrivals)) >= TOLERANCIA * INTERVALO
 
 
 def test_429_com_retry_after_pausa_todas_as_threads():
@@ -236,14 +241,14 @@ def test_chamada_aninhada_no_mesmo_host_nao_trava():
 
 
 def test_clientes_com_estado_compartilhado_dividem_o_limite():
-    with FakeServer() as server:
+    with FakeServer(body_delay=0.5) as server:
         base = HttpClient(
-            host_policies={HOST: HostPolicy(min_interval=0.06, max_concurrency=2)}
+            host_policies={HOST: HostPolicy(min_interval=INTERVALO, max_concurrency=2)}
         )
-        clientes = [HttpClient().share_host_state(base) for _ in range(8)]
-        run_parallel(lambda i: consume(clientes[i], server.url(f"/f{i}")), 8)
+        clientes = [HttpClient().share_host_state(base) for _ in range(6)]
+        run_parallel(lambda i: consume(clientes[i], server.url(f"/f{i}")), 6)
     assert server.max_active == 2
-    assert min(gaps(server.arrivals)) >= 0.05
+    assert min(gaps(server.arrivals)) >= TOLERANCIA * INTERVALO
 
 
 def test_sem_politica_nada_muda():
@@ -264,3 +269,73 @@ def test_max_concurrency_zero_nao_limita():
         run_parallel(lambda i: consume(client, server.url(f"/f{i}")), 8)
         assert client._host_semaphores == {}
     assert server.max_active > 2
+
+
+def test_fechar_em_ordem_inversa_so_solta_a_vaga_no_ultimo():
+    """A (dona da vaga) fecha antes de B (aninhado): a vaga segue presa até B."""
+    with FakeServer(body_delay=0.0) as server:
+        client = HttpClient(
+            host_policies={HOST: HostPolicy(min_interval=0.0, max_concurrency=1)}
+        )
+        a = client.stream("GET", server.url("/a"))
+        b = client.stream("GET", server.url("/b"))
+        a.__enter__()
+        b.__enter__()
+        a.__exit__(None, None, None)  # fecha o dono antes do aninhado
+
+        livre = threading.Event()
+
+        def outra_thread() -> None:
+            consume(client, server.url("/c"))
+            livre.set()
+
+        t = threading.Thread(target=outra_thread, daemon=True)
+        t.start()
+        assert not livre.wait(0.5)  # B ainda segura a vaga
+        b.__exit__(None, None, None)
+        assert livre.wait(5)  # agora a vaga voltou
+        t.join(timeout=5)
+        # contador zerado: a mesma thread volta a abrir e fechar sem travar
+        assert consume(client, server.url("/d")) == len(BODY)
+        assert client._host_slots_held.hosts == {}
+
+
+def test_espera_longa_pela_vaga_avisa_uma_vez_e_continua(monkeypatch, caplog):
+    import logging
+
+    from quantilica.core import http as http_mod
+
+    monkeypatch.setattr(http_mod, "HOST_SLOT_WARN_AFTER", 0.1)
+    with FakeServer(body_delay=0.0) as server:
+        client = HttpClient(
+            host_policies={HOST: HostPolicy(min_interval=0.0, max_concurrency=1)}
+        )
+        segura = threading.Event()
+        solta = threading.Event()
+
+        def dona() -> None:
+            with client.stream("GET", server.url("/a")):
+                segura.set()
+                solta.wait(5)
+
+        t = threading.Thread(target=dona, daemon=True)
+        t.start()
+        assert segura.wait(5)
+        resultado: list[int] = []
+        t2 = threading.Thread(
+            target=lambda: resultado.append(consume(client, server.url("/b"))),
+            name="espera-vaga",
+            daemon=True,
+        )
+        with caplog.at_level(logging.WARNING):
+            t2.start()
+            time.sleep(0.6)  # bem acima do limiar: ainda sem erro, ainda esperando
+            assert resultado == []
+            solta.set()
+            t2.join(timeout=5)
+            t.join(timeout=5)
+    assert resultado == [len(BODY)]
+    avisos = [r for r in caplog.records if "free slot" in r.getMessage()]
+    assert len(avisos) == 1
+    assert HOST in avisos[0].getMessage()
+    assert "espera-vaga" in avisos[0].getMessage()

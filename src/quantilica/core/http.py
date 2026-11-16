@@ -53,6 +53,9 @@ ProgressCallback = Callable[[int, int], None]
 
 DEFAULT_STREAM_CHUNK_SIZE = 64 * 1024
 
+HOST_SLOT_WARN_AFTER = 60.0
+"""Seconds a request waits for a ``max_concurrency`` slot before logging a warning."""
+
 DEFAULT_USER_AGENT = "quantilica-core"
 DEFAULT_TIMEOUT = 60.0
 DEFAULT_MAX_RESUMES = 1000
@@ -170,9 +173,15 @@ class HostPolicy:
 
     ``max_concurrency`` caps the simultaneous requests to the host, for
     ``request()`` and ``stream()`` alike (a stream holds its slot until the
-    ``with`` block ends). ``0`` disables the cap. Clients that must obey one
-    shared policy (the per-thread clients of a parallel download) adopt each
-    other's state with :meth:`HttpClient.share_host_state`.
+    ``with`` block ends). It applies to any host that has a policy, so the
+    default of ``4`` also limits a policy that only sets ``min_interval``:
+    at most 4 simultaneous downloads per host (``0`` disables the cap). The
+    cap exists only in the synchronous :class:`HttpClient`;
+    :class:`AsyncHttpClient` has none. A ``stream()`` body must not call
+    another host with a policy (two threads holding one slot each and
+    waiting for the other's deadlock with ``max_concurrency=1``). Clients
+    that must obey one shared policy (the per-thread clients of a parallel
+    download) adopt each other's state with :meth:`HttpClient.share_host_state`.
     """
 
     min_interval: float = 1.0
@@ -515,35 +524,47 @@ class HttpClient:
         Re-entrant per thread: a thread that already holds the slot of a host
         (a ``stream()`` body that calls ``get()`` on the same host) does not
         take a second one, which would deadlock with ``max_concurrency=1``.
+        The slot is released when the *last* block of the thread on that host
+        ends, in whatever order the blocks close.
+
+        A wait for the slot longer than :data:`HOST_SLOT_WARN_AFTER` seconds
+        logs one warning (host and thread) and keeps waiting: it never raises.
         """
         policy = self._policy_for(url)
         if policy is None or policy.max_concurrency <= 0:
             yield
             return
         host = self._extract_host(url)
-        held: dict[str, int] | None = getattr(self._host_slots_held, "hosts", None)
+        held: dict[str, list[Any]] | None = getattr(
+            self._host_slots_held, "hosts", None
+        )
         if held is None:
             held = self._host_slots_held.hosts = {}
-        if held.get(host, 0) > 0:
-            held[host] += 1
-            try:
-                yield
-            finally:
-                held[host] -= 1
-            return
-        with self._lock:
-            semaphore = self._host_semaphores.get(host)
-            if semaphore is None:
-                semaphore = self._host_semaphores[host] = threading.BoundedSemaphore(
-                    policy.max_concurrency
+        entry = held.get(host)
+        if entry is None:
+            with self._lock:
+                semaphore = self._host_semaphores.get(host)
+                if semaphore is None:
+                    semaphore = self._host_semaphores[host] = (
+                        threading.BoundedSemaphore(policy.max_concurrency)
+                    )
+            if not semaphore.acquire(timeout=HOST_SLOT_WARN_AFTER):
+                self.logger.warning(
+                    f"Waiting more than {HOST_SLOT_WARN_AFTER:g}s for a free "
+                    f"slot of {host} (max_concurrency={policy.max_concurrency}, "
+                    f"thread {threading.current_thread().name}); a stream() "
+                    f"body must not call another host that has a policy"
                 )
-        semaphore.acquire()
-        held[host] = 1
+                semaphore.acquire()
+            entry = held[host] = [0, semaphore]
+        entry[0] += 1
         try:
             yield
         finally:
-            held[host] = 0
-            semaphore.release()
+            entry[0] -= 1
+            if entry[0] == 0:
+                held.pop(host, None)
+                entry[1].release()
 
     def _acquire_rate_limits(self, url: str) -> int | None:
         """Pace the request; return the half-open probe ticket, if it is one."""
@@ -1511,7 +1532,16 @@ class HttpClient:
 
             For a host with a :class:`HostPolicy`, the ``max_concurrency``
             slot is held until the ``with`` block ends (the whole body), and
-            is released even if the block raises or is abandoned.
+            is released even if the block raises. A context manager that is
+            opened and never closed releases the slot when its generator is
+            finalized, which is immediate in CPython unless the object sits
+            in a reference cycle (then only when the garbage collector runs).
+
+            The body must not call another host that also has a policy: two
+            threads that each hold a slot of one host while waiting for the
+            other's (``max_concurrency=1``) deadlock. Same-host calls from
+            the body are safe (the thread reuses its slot). A wait longer
+            than :data:`HOST_SLOT_WARN_AFTER` logs a warning.
         """
         with self._host_slot(url):
             ticket = self._acquire_rate_limits(url)
