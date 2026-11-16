@@ -15,9 +15,20 @@ Regras de cálculo
 - **Período** vem do caminho Hive, nunca do rodapé: ``ano=2005/mes=08`` vira
   ``"2005-08"`` (granularidade ``"mensal"``); só ``ano=2005`` vira ``"2005"``
   (``"anual"``). ``mes=8`` e ``mes=08`` são o mesmo mês. Misturar arquivos com e
-  sem ``mes`` no mesmo dataset, ou arquivo sem ``ano``, levanta ``ValueError``.
+  sem ``mes`` no mesmo dataset levanta ``ValueError``. Dataset cujos arquivos
+  não têm ``ano=`` levanta uma vez só :class:`DatasetSemPeriodoError` (um
+  ``ValueError``), em vez de acusar arquivo por arquivo.
   Subpartições além de ``ano``/``mes`` (por exemplo ``uf=SP``) não definem
   período: os arquivos do mesmo período são somados.
+- **Mês como coluna de membro**: quando a pasta só tem ``ano=`` e o rodapé de
+  *todos* os arquivos assim declara ``mes`` em ``quantilica.member_columns`` e
+  traz o mês de cada bruto em ``quantilica.members``, o período passa a ser
+  ``AAAA-MM`` (granularidade ``"mensal"``). As linhas e os nulos de cada mês vêm
+  da coluna ``mes`` do arquivo: um grupo de linhas de um mês só é atribuído pelas
+  estatísticas do rodapé, sem ler dados; um grupo que mistura meses (o normal
+  quando os brutos são pequenos) é lido, e só ele. Se algum arquivo não declara o
+  mês por membro, ou os meses dos dados não batem com os do rodapé, todo o
+  dataset sai anual, sem falhar.
 - ``linhas[i]`` é a soma de ``num_rows`` de todos os arquivos do período ``i``;
   ``nulos[i]`` de cada coluna é a soma dos ``null_count`` de todos os grupos de
   linhas de todos os arquivos do período.
@@ -30,8 +41,9 @@ Regras de cálculo
   Se um período tem vários arquivos e a coluna falta em alguns, ela existe no
   período e os arquivos sem ela contam todas as suas linhas como nulas.
 - **Colunas excluídas** do documento (:data:`EXCLUDED_COLUMNS`): as de partição
-  ``ano``, ``mes``, as colunas físicas ``uf`` e ``_origem`` e qualquer chave
-  ``chave=valor`` que apareça nos caminhos.
+  ``ano``, ``mes``, as colunas físicas ``uf`` e ``_origem``, qualquer chave
+  ``chave=valor`` que apareça nos caminhos e as colunas que os rodapés declaram
+  em ``quantilica.member_columns``.
 - **Fallback**: se o rodapé não traz ``null_count`` (arquivo escrito sem
   estatísticas) ou a coluna é aninhada (struct, lista, mapa), a contagem lê essa
   coluna do arquivo. Nos arquivos do lake isso não ocorre.
@@ -72,6 +84,7 @@ from typing import Any, TypedDict
 
 __all__ = [
     "EXCLUDED_COLUMNS",
+    "DatasetSemPeriodoError",
     "PROFILE_VERSION",
     "LakeProfile",
     "ProfileColumn",
@@ -86,6 +99,18 @@ PROFILE_VERSION = 1
 EXCLUDED_COLUMNS = ("ano", "mes", "uf", "_origem")
 
 _HIVE_PART = re.compile(r"^([^=/]+)=(.*)$")
+META_MEMBERS = "quantilica.members"
+META_MEMBER_COLUMNS = "quantilica.member_columns"
+_MES = "mes"
+
+
+class DatasetSemPeriodoError(ValueError):
+    """Nenhum arquivo do dataset tem a partição ``ano=``: não há período.
+
+    Subclasse de ``ValueError``: quem já capturava o erro antigo ("arquivo sem
+    partição ano=") segue funcionando. O erro agora é do dataset, não de um
+    arquivo.
+    """
 
 
 class ProfileColumn(TypedDict):
@@ -177,44 +202,182 @@ def import_pyarrow_parquet(who: str) -> Any:
     return pq
 
 
-def _file_stats(pq: Any, file: Path) -> tuple[int, dict[str, tuple[str, int]]]:
-    """``(linhas, {coluna: (tipo_arrow, nulos)})`` de um arquivo, pelo rodapé."""
+_ColStats = dict[str, tuple[str, int]]
+
+
+def _leaf_index(meta: Any) -> dict[str, int]:
+    if meta.num_row_groups == 0:
+        return {}
+    return {
+        meta.row_group(0).column(j).path_in_schema: j for j in range(meta.num_columns)
+    }
+
+
+def _null_count(pf: Any, leaf: dict[str, int], field: Any, groups: range) -> int:
+    """Nulos de uma coluna nos grupos ``groups``: pelo rodapé, ou lendo a coluna."""
+    import pyarrow as pa
+
+    name = field.name
+    meta = pf.metadata
+    if meta.num_row_groups == 0 or not groups:
+        return 0
+    if not pa.types.is_nested(field.type) and name in leaf:  # aninhada: várias folhas
+        total = 0
+        for g in groups:
+            stats = meta.row_group(g).column(leaf[name]).statistics
+            if stats is None or not stats.has_null_count:
+                break
+            total += stats.null_count
+        else:
+            return total
+    return sum(
+        pf.read_row_group(g, columns=[name]).column(0).null_count for g in groups
+    )
+
+
+def _file_stats(pq: Any, file: Path) -> tuple[int, _ColStats, dict[str, str]]:
+    """``(linhas, {coluna: (tipo_arrow, nulos)}, rodapé)`` de um arquivo.
+
+    Tudo pelo rodapé; só lê dados quando a coluna é aninhada ou o arquivo foi
+    escrito sem estatísticas.
+    """
     pf = pq.ParquetFile(file)
     try:
         meta = pf.metadata
-        arrow_schema = pf.schema_arrow
-        leaf_index = (
-            {
-                meta.row_group(0).column(j).path_in_schema: j
-                for j in range(meta.num_columns)
-            }
-            if meta.num_row_groups > 0
-            else {}
-        )
-        # Aninhadas (struct, lista, mapa) têm várias folhas: leem a coluna.
-        import pyarrow as pa
+        leaf = _leaf_index(meta)
+        everything = range(meta.num_row_groups)
+        out: _ColStats = {
+            f.name: (str(f.type), _null_count(pf, leaf, f, everything))
+            for f in pf.schema_arrow
+        }
+        kv = {
+            k.decode(errors="replace"): v.decode(errors="replace")
+            for k, v in (meta.metadata or {}).items()
+        }
+        return meta.num_rows, out, kv
+    finally:
+        pf.close()
 
-        out: dict[str, tuple[str, int]] = {}
-        for arrow_field in arrow_schema:
-            name = arrow_field.name
-            nulls: int | None = 0
-            direct = not pa.types.is_nested(arrow_field.type) and name in leaf_index
-            if meta.num_row_groups == 0:
-                nulls = 0
-            elif not direct:
-                nulls = None
-            else:
-                j = leaf_index[name]
-                for g in range(meta.num_row_groups):
-                    stats = meta.row_group(g).column(j).statistics
-                    if stats is None or not stats.has_null_count:
-                        nulls = None
-                        break
-                    nulls += stats.null_count
-            if nulls is None:
-                nulls = pf.read(columns=[name]).column(0).null_count
-            out[name] = (str(arrow_field.type), nulls)
-        return meta.num_rows, out
+
+def _member_columns(kv: Mapping[str, str]) -> list[str]:
+    """Colunas de membro que o rodapé declara (lista vazia se não declara)."""
+    try:
+        names = json.loads(kv.get(META_MEMBER_COLUMNS, "[]"))
+    except ValueError:
+        return []
+    return [n for n in names if isinstance(n, str)] if isinstance(names, list) else []
+
+
+def _as_month(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        month = int(value)
+    except (TypeError, ValueError):
+        return None
+    return month if 1 <= month <= 12 else None
+
+
+def _member_months(kv: Mapping[str, str]) -> set[int] | None:
+    """Meses (1-12) que o rodapé dá aos brutos do arquivo; ``None`` se não dá.
+
+    Só vale quando ``mes`` é coluna de membro e *todo* membro traz um mês
+    válido: um membro sem mês deixaria linhas sem período.
+    """
+    if _MES not in _member_columns(kv):
+        return None
+    try:
+        members = json.loads(kv.get(META_MEMBERS, ""))
+    except ValueError:
+        return None
+    if not isinstance(members, dict) or not members:
+        return None
+    months = {
+        _as_month(m.get(_MES)) if isinstance(m, dict) else None
+        for m in members.values()
+    }
+    return None if None in months else months  # type: ignore[return-value]
+
+
+def _single_month(pq_group: Any, column: int | None) -> int | None:
+    """O mês de um grupo de linhas, se as estatísticas de ``mes`` dizem que é um só."""
+    if column is None:
+        return None
+    stats = pq_group.column(column).statistics
+    if (
+        stats is None
+        or not stats.has_min_max
+        or not stats.has_null_count
+        or stats.null_count
+    ):
+        return None
+    low, high = _as_month(stats.min), _as_month(stats.max)
+    return low if low is not None and low == high else None
+
+
+def _file_stats_by_month(
+    pq: Any, file: Path, declared: set[int]
+) -> dict[int, tuple[int, _ColStats]] | None:
+    """``{mes: (linhas, {coluna: (tipo, nulos)})}`` de um arquivo anual com ``mes``.
+
+    Grupo de linhas de um mês só: contagens do rodapé. Grupo que mistura meses:
+    lê o grupo e conta por mês. ``None`` se o arquivo não tem a coluna ``mes``,
+    se ela tem nulo ou valor fora de 1-12, ou se traz mês que o rodapé não
+    declarou: o chamador então agrega como anual.
+    """
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    pf = pq.ParquetFile(file)
+    try:
+        meta = pf.metadata
+        fields = list(pf.schema_arrow)
+        if _MES not in {f.name for f in fields}:
+            return None
+        leaf = _leaf_index(meta)
+        rows: dict[int, int] = {}
+        nulls: dict[int, dict[str, int]] = {}
+
+        def add(month: int, count: int, per_column: dict[str, int]) -> None:
+            rows[month] = rows.get(month, 0) + count
+            acc = nulls.setdefault(month, dict.fromkeys(per_column, 0))
+            for column, n_null in per_column.items():
+                acc[column] += n_null
+
+        for g in range(meta.num_row_groups):
+            group = meta.row_group(g)
+            month = _single_month(group, leaf.get(_MES))
+            if month is not None:
+                add(
+                    month,
+                    group.num_rows,
+                    {f.name: _null_count(pf, leaf, f, range(g, g + 1)) for f in fields},
+                )
+                continue
+            table = pf.read_row_group(g)
+            try:
+                mes = pc.cast(table.column(_MES), pa.int64())
+            except (pa.ArrowInvalid, pa.ArrowNotImplementedError):
+                return None
+            values = pc.unique(mes).to_pylist()
+            if any(_as_month(v) is None for v in values):
+                return None
+            for month in values:
+                part = table.filter(pc.equal(mes, month))
+                add(
+                    month,
+                    part.num_rows,
+                    {f.name: part.column(f.name).null_count for f in fields},
+                )
+        if set(rows) - declared:
+            return None
+        return {
+            month: (
+                rows[month],
+                {f.name: (str(f.type), nulls[month][f.name]) for f in fields},
+            )
+            for month in sorted(rows)
+        }
     finally:
         pf.close()
 
@@ -229,10 +392,11 @@ def profile_from_lake(
     """Perfil de ``<lake_dir>/<source_id>/<dataset_id>`` a partir dos rodapés.
 
     Ver o docstring do módulo para regras e formato. ``exclude`` substitui a
-    lista :data:`EXCLUDED_COLUMNS`; chaves de partição Hive dos caminhos são
-    sempre excluídas. Levanta ``FileNotFoundError`` (dataset ou Parquet
-    ausente) e ``ValueError`` (arquivo sem ``ano``, ``ano``/``mes`` inválidos ou
-    granularidade mista).
+    lista :data:`EXCLUDED_COLUMNS`; chaves de partição Hive dos caminhos e as
+    colunas de membro declaradas nos rodapés são sempre excluídas. Levanta
+    ``FileNotFoundError`` (dataset ou Parquet ausente) e ``ValueError``
+    (``ano``/``mes`` inválidos, granularidade mista, ou
+    :class:`DatasetSemPeriodoError` quando nenhum arquivo tem ``ano=``).
     """
     pq = import_pyarrow_parquet("profile_from_lake")
     base = Path(lake_dir) / source_id / dataset_id
@@ -243,20 +407,56 @@ def profile_from_lake(
         raise FileNotFoundError(f"nenhum arquivo Parquet em {base}")
 
     excluded = set(exclude)
-    grans: set[str] = set()
-    by_period: dict[str, list[Path]] = {}
+    found_by_file: dict[Path, tuple[str, str]] = {}
+    no_period: list[Path] = []
     for file in files:
         rel = file.relative_to(base)
         found = period_from_path(rel)
         if found is None:
-            raise ValueError(f"arquivo sem partição ano=: {rel}")
-        period, gran = found
-        grans.add(gran)
-        by_period.setdefault(period, []).append(file)
+            no_period.append(rel)
+            continue
+        found_by_file[file] = found
         for part in rel.parts[:-1]:
             m = _HIVE_PART.match(part)
             if m:
                 excluded.add(m.group(1))
+    if no_period:
+        if len(no_period) == len(files):
+            raise DatasetSemPeriodoError(
+                f"dataset sem partição ano= ({len(files)} arquivos; "
+                f"ex.: {no_period[0]}): não há período para o perfil"
+            )
+        raise ValueError(
+            f"{len(no_period)} de {len(files)} arquivos sem partição ano= "
+            f"(ex.: {no_period[0]})"
+        )
+
+    stats = {file: _file_stats(pq, file) for file in files}
+    for _, _, kv in stats.values():
+        excluded.update(_member_columns(kv))
+
+    # (período, linhas, colunas) de cada arquivo; um arquivo anual com ``mes`` de
+    # membro rende um item por mês, se todos os anuais do dataset puderem.
+    annual = [f for f, (_, gran) in found_by_file.items() if gran == "anual"]
+    by_month: dict[Path, dict[int, tuple[int, _ColStats]]] = {}
+    for file in annual:
+        declared = _member_months(stats[file][2])
+        split = _file_stats_by_month(pq, file, declared) if declared else None
+        if split is None:
+            by_month.clear()  # um arquivo sem mês por membro: todos ficam anuais
+            break
+        by_month[file] = split
+
+    grans: set[str] = set()
+    by_period: dict[str, list[tuple[int, _ColStats]]] = {}
+    for file, (period, gran) in found_by_file.items():
+        if file in by_month:
+            grans.add("mensal")
+            for month, item in by_month[file].items():
+                by_period.setdefault(f"{period}-{month:02d}", []).append(item)
+        else:
+            grans.add(gran)
+            by_period.setdefault(period, []).append((stats[file][0], stats[file][1]))
     if len(grans) > 1:
         raise ValueError(f"granularidade mista (anual e mensal) em {base}")
 
@@ -266,7 +466,7 @@ def profile_from_lake(
     nulos: dict[str, dict[int, int]] = {}
     dtype: dict[str, str] = {}
     for i, period in enumerate(periodos):
-        in_period = [_file_stats(pq, f) for f in sorted(by_period[period])]
+        in_period = by_period[period]
         rows_total = sum(rows for rows, _ in in_period)
         names: dict[str, None] = {}  # união das colunas do período, em ordem
         for _, cols in in_period:

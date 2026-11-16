@@ -11,6 +11,7 @@ import pytest
 
 from quantilica.core.docs import schema_from_lake
 from quantilica.core.lake_profile import (
+    DatasetSemPeriodoError,
     LakeProfile,
     canonical_json,
     derivar_eras,
@@ -217,6 +218,181 @@ def test_period_from_path() -> None:
         period_from_path("ano=2005/mes=13/x.parquet")
     with pytest.raises(ValueError):
         period_from_path("ano=abc/x.parquet")
+
+
+# --- mês como coluna de membro -------------------------------------------------
+
+
+def write_grouped(
+    base: Path,
+    rel: str,
+    members: dict[str, dict],
+    columns: dict[str, list],
+    *,
+    member_columns: list[str] | None = None,
+    row_group_size: int | None = None,
+) -> Path:
+    """Parquet agrupado: ``quantilica.members`` e ``quantilica.member_columns``."""
+    path = base / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    meta = {"quantilica.members": json.dumps(members)}
+    if member_columns is not None:
+        meta["quantilica.member_columns"] = json.dumps(member_columns)
+    table = pa.table(columns).replace_schema_metadata(meta)
+    pq.write_table(table, path, row_group_size=row_group_size)
+    return path
+
+
+def entry(rows: int, **cols) -> dict:
+    return {"origin_file": "x.csv", "origin_sha256": "0" * 64, "rows": rows, **cols}
+
+
+def test_mes_de_membro_com_grupos_de_um_mes_so_nao_le_dados(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = tmp_path / "alfa" / "sigtap"
+    # Um grupo de linhas por mês: as estatísticas de ``mes`` bastam.
+    write_grouped(
+        base,
+        "ano=2024/sigtap_2024.parquet",
+        {"a-202401": entry(2, mes=1), "a-202402": entry(3, mes=2)},
+        {
+            "v": [1, None, 3, None, None],
+            "mes": [1, 1, 2, 2, 2],
+            "_origem": ["a-202401"] * 2 + ["a-202402"] * 3,
+        },
+        member_columns=["mes"],
+        row_group_size=2,
+    )
+    # row_group_size=2 parte o mês 2 em dois grupos (2 + 1 linhas), ambos de um mês.
+    monkeypatch.setattr(
+        pq.ParquetFile,
+        "read_row_group",
+        lambda *a, **k: pytest.fail("não deve ler dados"),
+    )
+    res = profile_from_lake(tmp_path, "alfa", "sigtap")
+    assert res.perfil["granularidade"] == "mensal"
+    assert res.perfil["periodos"] == ["2024-01", "2024-02"]
+    assert res.perfil["linhas"] == [2, 3]
+    assert res.perfil["colunas"] == {"v": {"nulos": [1, 2]}}  # sem mes nem _origem
+
+
+def test_mes_de_membro_com_grupo_que_mistura_meses(tmp_path: Path) -> None:
+    base = tmp_path / "alfa" / "sigtap"
+    write_grouped(
+        base,
+        "ano=2024/sigtap_2024.parquet",
+        {"a-1": entry(3, mes=1), "a-2": entry(2, mes="02")},
+        {
+            "v": [None, 2, None, None, 5],
+            "mes": [1, 1, 1, 2, 2],
+            "_origem": ["a-1"] * 3 + ["a-2"] * 2,
+        },
+        member_columns=["mes"],
+    )  # um grupo só, com os dois meses
+    res = profile_from_lake(tmp_path, "alfa", "sigtap")
+    assert res.perfil["periodos"] == ["2024-01", "2024-02"]
+    assert res.perfil["linhas"] == [3, 2]
+    assert res.perfil["colunas"]["v"]["nulos"] == [2, 1]
+    assert [c["nome"] for c in res.colunas] == ["v"]
+    assert res.colunas[0]["periodo_inicio"] == "2024-01"
+
+
+def test_mes_de_membro_soma_arquivos_e_anos(tmp_path: Path) -> None:
+    base = tmp_path / "alfa" / "sigtap"
+    for ano in (2023, 2024):
+        write_grouped(
+            base,
+            f"ano={ano}/tabela_a.parquet",
+            {"m": entry(2, mes=12)},
+            {"v": [1, None], "mes": [12, 12]},
+            member_columns=["mes"],
+        )
+        write_grouped(
+            base,
+            f"ano={ano}/tabela_b.parquet",
+            {"m": entry(1, mes=12)},
+            {"v": [None], "mes": [12]},
+            member_columns=["mes"],
+        )
+    res = profile_from_lake(tmp_path, "alfa", "sigtap")
+    assert res.perfil["periodos"] == ["2023-12", "2024-12"]
+    assert res.perfil["linhas"] == [3, 3]
+    assert res.perfil["colunas"]["v"]["nulos"] == [2, 2]
+
+
+def test_mes_de_membro_ausente_agrega_como_anual(tmp_path: Path) -> None:
+    base = tmp_path / "alfa" / "d"
+    # Sem ``quantilica.members``: anual, sem falhar.
+    write(base, "ano=2024/a.parquet", {"v": [1, None], "mes": [1, 2]})
+    res = profile_from_lake(tmp_path, "alfa", "d")
+    assert res.perfil["granularidade"] == "anual"
+    assert res.perfil["periodos"] == ["2024"]
+    assert res.perfil["linhas"] == [2]
+
+    # Um arquivo sem mês por membro faz o dataset inteiro sair anual.
+    base = tmp_path / "alfa" / "e"
+    write_grouped(
+        base,
+        "ano=2024/a.parquet",
+        {"m": entry(2, mes=1)},
+        {"v": [1, None], "mes": [1, 1]},
+        member_columns=["mes"],
+    )
+    write_grouped(
+        base,
+        "ano=2024/b.parquet",
+        {"m": entry(1)},  # membro sem mes
+        {"v": [1], "mes": [3]},
+        member_columns=["mes"],
+    )
+    res = profile_from_lake(tmp_path, "alfa", "e")
+    assert res.perfil["granularidade"] == "anual"
+    assert res.perfil["linhas"] == [3]
+    assert res.perfil["colunas"]["v"]["nulos"] == [1]
+
+
+def test_mes_dos_dados_fora_do_rodape_agrega_como_anual(tmp_path: Path) -> None:
+    base = tmp_path / "alfa" / "d"
+    write_grouped(
+        base,
+        "ano=2024/a.parquet",
+        {"m": entry(2, mes=1)},
+        {"v": [1, 2], "mes": [1, 2]},  # o dado tem o mês 2; o rodapé só o 1
+        member_columns=["mes"],
+    )
+    res = profile_from_lake(tmp_path, "alfa", "d")
+    assert res.perfil["granularidade"] == "anual"
+    assert res.perfil["linhas"] == [2]
+
+
+def test_colunas_de_membro_do_rodape_saem_do_perfil(tmp_path: Path) -> None:
+    base = tmp_path / "alfa" / "d"
+    write_grouped(
+        base,
+        "ano=2024/a.parquet",
+        {"m": entry(2, serie="s1")},
+        {"v": [1, None], "serie": ["s1", "s1"], "_origem": ["m", "m"]},
+        member_columns=["serie"],
+    )
+    res = profile_from_lake(tmp_path, "alfa", "d")
+    assert set(res.perfil["colunas"]) == {"v"}
+    assert res.perfil["granularidade"] == "anual"  # mes não é coluna de membro
+
+
+def test_dataset_sem_ano_erro_unico_do_dataset(tmp_path: Path) -> None:
+    base = tmp_path / "alfa" / "ipea"
+    for i in range(3):
+        write(base, f"base=a/p{i}.parquet", {"v": [i]})
+    with pytest.raises(DatasetSemPeriodoError, match="3 arquivos") as err:
+        profile_from_lake(tmp_path, "alfa", "ipea")
+    assert isinstance(err.value, ValueError)  # quem capturava ValueError segue igual
+
+    misto = tmp_path / "alfa" / "misto2"
+    write(misto, "ano=2020/p.parquet", {"v": [1]})
+    write(misto, "solto.parquet", {"v": [1]})
+    with pytest.raises(ValueError, match="1 de 2 arquivos"):
+        profile_from_lake(tmp_path, "alfa", "misto2")
 
 
 # --- derivar_eras ----------------------------------------------------------------

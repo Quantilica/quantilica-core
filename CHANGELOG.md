@@ -7,6 +7,16 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+### Adicionado
+
+- `lake_profile.profile_from_lake`: o mês pode vir da coluna de membro. Quando a pasta só tem `ano=` e o rodapé de todos os arquivos assim declara `mes` em `quantilica.member_columns` e traz o mês de cada bruto em `quantilica.members`, o período passa a ser `AAAA-MM` (granularidade mensal). Linhas e nulos de cada mês vêm da coluna `mes`: grupo de linhas de um mês só é atribuído pelas estatísticas do rodapé, sem ler dados; grupo que mistura meses é lido (só ele). Sem o mês por membro em algum arquivo, ou com meses nos dados que o rodapé não declara, o dataset inteiro sai anual, sem falhar.
+- `lake_profile.DatasetSemPeriodoError` (subclasse de `ValueError`).
+
+### Alterado
+
+- `lake_profile.profile_from_lake`: as colunas que os rodapés declaram em `quantilica.member_columns` saem do perfil, além das de `EXCLUDED_COLUMNS` (`uf` deixa de ser a única).
+- `lake_profile.profile_from_lake`: dataset em que nenhum arquivo tem `ano=` levanta um único `DatasetSemPeriodoError` com a contagem de arquivos, em vez de um `ValueError` pelo primeiro arquivo. Como é um `ValueError`, quem já o capturava segue funcionando. Dataset com só parte dos arquivos sem `ano=` levanta `ValueError` com a contagem.
+
 ## [0.23.0] - 2026-11-15
 
 ### Adicionado
