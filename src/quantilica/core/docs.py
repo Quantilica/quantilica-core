@@ -45,7 +45,9 @@ aparecem nos arquivos (ordenados por caminho); ``particoes`` são as chaves
 
 ``periodo_inicio`` e ``periodo_fim`` (opcionais por coluna) são o primeiro e o
 último período em que a coluna existe nos arquivos, lidos das partições
-``ano=``/``mes=`` do caminho (``"AAAA-MM"`` se há ``mes``, senão ``"AAAA"``).
+partições do caminho, no formato de
+:func:`quantilica.core.lake_profile.period_from_path` (``"AAAA"``, ``"AAAA-S1"``,
+``"AAAA-T1"``, ``"AAAA-MM"`` ou ``"AAAA-MM-DD"``).
 Ficam ausentes se o dataset não tem partição ``ano``. Quem lê o esquema deve
 tratar as duas chaves como opcionais; a verificação (``check_fetcher_docs``)
 não as usa. As colunas físicas ``uf`` e ``_origem`` constam no esquema (e levam

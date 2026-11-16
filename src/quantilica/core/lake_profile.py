@@ -15,8 +15,13 @@ Regras de cálculo
 - **Período** vem do caminho Hive, nunca do rodapé: ``ano=2005/mes=08`` vira
   ``"2005-08"`` (granularidade ``"mensal"``); só ``ano=2005`` vira ``"2005"``
   (``"anual"``); ``competencia=200508`` (sem ``ano=``) também vira
-  ``"2005-08"``. ``mes=8`` e ``mes=08`` são o mesmo mês. Misturar arquivos com
-  e sem ``mes`` no mesmo dataset levanta ``ValueError``. Dataset cujos arquivos
+  ``"2005-08"``. Cinco granularidades (:data:`GRANULARIDADES`): ``anual``
+  (``AAAA``), ``semestral`` (``ano=`` + ``semestre=1-2``, ``AAAA-S1``),
+  ``trimestral`` (``ano=`` + ``trimestre=1-4``, ``AAAA-T1``), ``mensal``
+  (``AAAA-MM``) e ``diaria`` (``ano=`` + ``mes=`` + ``dia=``, ``AAAA-MM-DD``);
+  ver :func:`period_from_path`. ``mes=8`` e ``mes=08`` são o mesmo mês. O dataset
+  tem uma granularidade só: misturar arquivos de granularidades diferentes (por
+  exemplo com e sem ``mes``) levanta ``ValueError``. Dataset cujos arquivos
   não têm ``ano=`` (nem ``competencia=``) levanta uma vez só
   :class:`DatasetSemPeriodoError` (um ``ValueError``), em vez de acusar arquivo
   por arquivo.
@@ -72,11 +77,13 @@ import json
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any, TypedDict
 
 __all__ = [
     "EXCLUDED_COLUMNS",
+    "GRANULARIDADES",
     "DatasetSemPeriodoError",
     "PROFILE_VERSION",
     "LakeProfile",
@@ -93,6 +100,8 @@ EXCLUDED_COLUMNS = ("ano", "mes", "uf", "_origem")
 
 _HIVE_PART = re.compile(r"^([^=/]+)=(.*)$")
 _COMPETENCIA = re.compile(r"^(\d{4})(\d{2})$")
+_SUBPERIOD_KEYS = ("semestre", "trimestre", "mes", "dia")
+GRANULARIDADES = ("anual", "semestral", "trimestral", "mensal", "diaria")
 META_MEMBER_COLUMNS = "quantilica.member_columns"
 
 
@@ -144,14 +153,30 @@ def perfil_sha256(perfil: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical_json(perfil).encode("utf-8")).hexdigest()
 
 
+def _int_key(keys: Mapping[str, str], name: str, rel: Path | str) -> int:
+    try:
+        return int(keys[name])
+    except ValueError as exc:
+        raise ValueError(f"partição {name}= inválida em {rel}") from exc
+
+
 def period_from_path(rel: Path | str) -> tuple[str, str] | None:
     """Período de um caminho relativo ao dataset, ou ``None`` se não há período.
 
-    Devolve ``(periodo, granularidade)``: ``("2005-08", "mensal")`` para
-    ``ano=2005/mes=8/...`` e para ``competencia=200508/...`` (sem ``ano=``), e
-    ``("2005", "anual")`` para ``ano=2005/...``. Com ``ano=`` e
-    ``competencia=`` no mesmo caminho vale o ``ano=``. Valores inválidos
-    levantam ``ValueError``.
+    Devolve ``(periodo, granularidade)`` conforme as partições do caminho:
+
+    - ``ano=``: ``AAAA``, ``anual``;
+    - ``ano=`` + ``semestre=`` (1-2): ``AAAA-S1``, ``semestral``;
+    - ``ano=`` + ``trimestre=`` (1-4): ``AAAA-T1``, ``trimestral``;
+    - ``ano=`` + ``mes=`` (1-12) ou ``competencia=AAAAMM``: ``AAAA-MM``, ``mensal``;
+    - ``ano=`` + ``mes=`` + ``dia=``: ``AAAA-MM-DD``, ``diaria``.
+
+    ``competencia=`` só vale sem ``ano=``; com ``ano=`` e ``competencia=`` no
+    mesmo caminho vale o ``ano=``. Valores inválidos (fora da faixa, ``dia``
+    inexistente no mês, não numéricos), ``dia=`` sem ``mes=`` e combinações
+    ambíguas (por exemplo ``semestre=`` com ``trimestre=``) levantam
+    ``ValueError``. Dentro de cada granularidade a ordem lexicográfica do
+    período é a cronológica.
     """
     parts = Path(rel).parts[:-1]
     keys: dict[str, str] = {}
@@ -166,16 +191,37 @@ def period_from_path(rel: Path | str) -> tuple[str, str] | None:
         if m is None or not 1 <= int(m.group(2)) <= 12:
             raise ValueError(f"competencia inválida em {rel}")
         return f"{int(m.group(1)):04d}-{m.group(2)}", "mensal"
-    try:
-        ano = int(keys["ano"])
-        mes = int(keys["mes"]) if "mes" in keys else None
-    except ValueError as exc:
-        raise ValueError(f"partição ano/mes inválida em {rel}") from exc
-    if mes is None:
+    ano = _int_key(keys, "ano", rel)
+    if not 0 <= ano <= 9999:
+        raise ValueError(f"ano fora de 0-9999 em {rel}")
+    sub = {k for k in _SUBPERIOD_KEYS if k in keys}
+    if not sub:
         return f"{ano:04d}", "anual"
-    if not 1 <= mes <= 12:
-        raise ValueError(f"mes fora de 1-12 em {rel}")
-    return f"{ano:04d}-{mes:02d}", "mensal"
+    if sub == {"semestre"}:
+        semestre = _int_key(keys, "semestre", rel)
+        if not 1 <= semestre <= 2:
+            raise ValueError(f"semestre fora de 1-2 em {rel}")
+        return f"{ano:04d}-S{semestre}", "semestral"
+    if sub == {"trimestre"}:
+        trimestre = _int_key(keys, "trimestre", rel)
+        if not 1 <= trimestre <= 4:
+            raise ValueError(f"trimestre fora de 1-4 em {rel}")
+        return f"{ano:04d}-T{trimestre}", "trimestral"
+    if "mes" in sub and sub <= {"mes", "dia"}:
+        mes = _int_key(keys, "mes", rel)
+        if not 1 <= mes <= 12:
+            raise ValueError(f"mes fora de 1-12 em {rel}")
+        if "dia" not in sub:
+            return f"{ano:04d}-{mes:02d}", "mensal"
+        dia = _int_key(keys, "dia", rel)
+        try:
+            date(ano, mes, dia)
+        except ValueError as exc:
+            raise ValueError(f"dia inexistente em {rel}") from exc
+        return f"{ano:04d}-{mes:02d}-{dia:02d}", "diaria"
+    raise ValueError(
+        f"partições de período incompatíveis em {rel}: {', '.join(sorted(sub))}"
+    )
 
 
 def lake_parquet_files(base: Path) -> list[Path]:
@@ -324,7 +370,7 @@ def profile_from_lake(
         grans.add(gran)
         by_period.setdefault(period, []).append((stats[file][0], stats[file][1]))
     if len(grans) > 1:
-        raise ValueError(f"granularidade mista (anual e mensal) em {base}")
+        raise ValueError(f"granularidade mista ({', '.join(sorted(grans))}) em {base}")
 
     periodos = sorted(by_period)
     linhas: list[int] = []

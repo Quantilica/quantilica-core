@@ -9,6 +9,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ### Adicionado
 
+- `lake_profile.period_from_path` e `profile_from_lake` aceitam cinco granularidades (`GRANULARIDADES`): `anual` (`AAAA`), `semestral` (`ano=` + `semestre=1-2`, `AAAA-S1`), `trimestral` (`ano=` + `trimestre=1-4`, `AAAA-T1`), `mensal` (`AAAA-MM`) e `diaria` (`ano=` + `mes=` + `dia=`, `AAAA-MM-DD`). Valores fora da faixa, dia inexistente, `dia=` sem `mes=` e combinações ambíguas (`semestre=` com `trimestre=`, por exemplo) levantam `ValueError`; o dataset segue com uma granularidade só (mista é erro). `derivar_eras` não supõe granularidade. Perfis mensais e anuais já gerados não mudam.
 - `lake_profile.period_from_path` aceita `competencia=AAAAMM` (sem `ano=`) como período mensal (`AAAA-MM`); com `ano=` e `competencia=` no mesmo caminho vale o `ano=`. `profile_from_lake` passa a perfilar datasets particionados assim, com granularidade `mensal`.
 - `lake_profile.DatasetSemPeriodoError` (subclasse de `ValueError`).
 

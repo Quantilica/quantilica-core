@@ -229,6 +229,115 @@ def test_period_from_path() -> None:
         period_from_path("ano=abc/x.parquet")
 
 
+@pytest.mark.parametrize(
+    ("rel", "esperado"),
+    [
+        ("ano=2024/semestre=1/x.parquet", ("2024-S1", "semestral")),
+        ("ano=2024/semestre=02/x.parquet", ("2024-S2", "semestral")),
+        ("ano=2024/trimestre=3/x.parquet", ("2024-T3", "trimestral")),
+        ("ano=2024/trimestre=4/uf=SP/x.parquet", ("2024-T4", "trimestral")),
+        ("ano=2024/mes=3/dia=5/x.parquet", ("2024-03-05", "diaria")),
+        ("ano=2024/mes=02/dia=29/x.parquet", ("2024-02-29", "diaria")),
+    ],
+)
+def test_period_from_path_granularidades(rel: str, esperado: tuple[str, str]) -> None:
+    assert period_from_path(rel) == esperado
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "ano=2024/semestre=0/x.parquet",
+        "ano=2024/semestre=3/x.parquet",
+        "ano=2024/semestre=a/x.parquet",
+        "ano=2024/trimestre=0/x.parquet",
+        "ano=2024/trimestre=5/x.parquet",
+        "ano=2024/mes=2/dia=30/x.parquet",
+        "ano=2023/mes=2/dia=29/x.parquet",
+        "ano=2024/mes=4/dia=0/x.parquet",
+        "ano=2024/mes=4/dia=x/x.parquet",
+        "ano=2024/dia=5/x.parquet",  # dia sem mes
+        "ano=2024/semestre=1/trimestre=1/x.parquet",  # ambíguo
+        "ano=2024/semestre=1/mes=1/x.parquet",  # ambíguo
+        "ano=2024/trimestre=1/mes=1/dia=1/x.parquet",  # ambíguo
+    ],
+)
+def test_period_from_path_invalido(rel: str) -> None:
+    with pytest.raises(ValueError):
+        period_from_path(rel)
+
+
+def test_ordem_lexicografica_e_cronologica() -> None:
+    for gran, rels in {
+        "semestral": [
+            f"ano={a}/semestre={s}/x.parquet" for a in (2023, 2024) for s in (1, 2)
+        ],
+        "trimestral": [
+            f"ano={a}/trimestre={t}/x.parquet"
+            for a in (2023, 2024)
+            for t in (1, 2, 3, 4)
+        ],
+        "diaria": [
+            "ano=2024/mes=1/dia=31/x.parquet",
+            "ano=2024/mes=2/dia=1/x.parquet",
+            "ano=2024/mes=2/dia=9/x.parquet",
+            "ano=2024/mes=2/dia=10/x.parquet",
+            "ano=2025/mes=1/dia=1/x.parquet",
+        ],
+    }.items():
+        periodos = []
+        for rel in rels:
+            found = period_from_path(rel)
+            assert found is not None and found[1] == gran
+            periodos.append(found[0])
+        assert periodos == sorted(periodos)
+
+
+def test_perfil_trimestral_e_eras(tmp_path: Path) -> None:
+    base = tmp_path / "alfa" / "pgfn"
+    write(base, "ano=2023/trimestre=4/p.parquet", {"a": [1, None], "trimestre": [4, 4]})
+    write(base, "ano=2024/trimestre=1/p.parquet", {"a": [1], "b": ["x"]})
+    write(base, "ano=2024/trimestre=2/p.parquet", {"a": [None], "b": ["y"]})
+    res = profile_from_lake(tmp_path, "alfa", "pgfn")
+    p = res.perfil
+    assert p["granularidade"] == "trimestral"
+    assert p["periodos"] == ["2023-T4", "2024-T1", "2024-T2"]
+    assert p["linhas"] == [2, 1, 1]
+    assert p["colunas"]["a"]["nulos"] == [1, 0, 1]
+    assert p["colunas"]["b"]["nulos"] == [None, 0, 0]
+    assert "trimestre" not in p["colunas"]
+    assert {c["nome"]: (c["periodo_inicio"], c["periodo_fim"]) for c in res.colunas}[
+        "b"
+    ] == ("2024-T1", "2024-T2")
+    assert [(e["inicio"], e["fim"]) for e in derivar_eras(p)] == [
+        ("2023-T4", "2023-T4"),
+        ("2024-T1", "2024-T2"),
+    ]
+
+
+def test_perfil_semestral_e_diario(tmp_path: Path) -> None:
+    sem = tmp_path / "alfa" / "sem"
+    write(sem, "ano=2023/semestre=2/p.parquet", {"a": [1]})
+    write(sem, "ano=2024/semestre=1/p.parquet", {"a": [None]})
+    p = profile_from_lake(tmp_path, "alfa", "sem").perfil
+    assert (p["granularidade"], p["periodos"]) == ("semestral", ["2023-S2", "2024-S1"])
+    dia = tmp_path / "alfa" / "dia"
+    write(dia, "ano=2024/mes=01/dia=31/p.parquet", {"a": [1, 2]})
+    write(dia, "ano=2024/mes=02/dia=01/p.parquet", {"a": [None]})
+    p = profile_from_lake(tmp_path, "alfa", "dia").perfil
+    assert p["granularidade"] == "diaria"
+    assert p["periodos"] == ["2024-01-31", "2024-02-01"]
+    assert p["colunas"]["a"]["nulos"] == [0, 1]
+
+
+def test_granularidade_mista_entre_novas(tmp_path: Path) -> None:
+    base = tmp_path / "alfa" / "misto"
+    write(base, "ano=2024/trimestre=1/p.parquet", {"a": [1]})
+    write(base, "ano=2024/semestre=2/p.parquet", {"a": [1]})
+    with pytest.raises(ValueError, match="mista"):
+        profile_from_lake(tmp_path, "alfa", "misto")
+
+
 # --- colunas de membro, competencia= e dataset sem período -----------------------
 
 
