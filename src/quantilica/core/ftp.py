@@ -106,6 +106,8 @@ def parse_ftp_list_line(line: str) -> tuple[str, int, dt.datetime] | None:
         if permissions[0] != "-":
             return None  # d/l/c/b/p/s: directory, link, device, fifo...
         month = _MONTHS.get(match["month"].lower())
+        if month is None:
+            return None  # three letters, but not a month name: unrecognizable
         day = int(match["day"])
         year_slot = match["year_or_time"]
         if ":" in year_slot:
@@ -196,7 +198,8 @@ class MonitoredFTP(ftplib.FTP):
     def connect(self, host="", port=0, timeout=None, source_address=None):
         result = super().connect(host, port, timeout, source_address)
         with contextlib.suppress(OSError):
-            self.sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)
+            if self.sock is not None:
+                self.sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)
         return result
 
     def interrupt_transfer(self) -> None:
@@ -443,26 +446,27 @@ class FtpClient:
         Returns:
             list[dict[str, Any]]: A list of dictionaries with file metadata.
         """
-        if parse_line is None:
 
-            def parse_line(line: str) -> dict[str, Any] | None:
-                parts = line.split()
-                if len(parts) < 4:
-                    return None
-                is_dir = line.startswith("d") or "<DIR>" in line
-                name = parts[-1]
-                return {
-                    "name": name,
-                    "is_dir": is_dir,
-                    "full_path": f"{directory}/{name}".replace("//", "/"),
-                    "raw": line,
-                }
+        def _generic_parser(line: str) -> dict[str, Any] | None:
+            parts = line.split()
+            if len(parts) < 4:
+                return None
+            is_dir = line.startswith("d") or "<DIR>" in line
+            name = parts[-1]
+            return {
+                "name": name,
+                "is_dir": is_dir,
+                "full_path": f"{directory}/{name}".replace("//", "/"),
+                "raw": line,
+            }
+
+        parser = parse_line if parse_line is not None else _generic_parser
 
         def _attempt() -> list[dict[str, Any]]:
             with self._open() as ftp:
                 ftp.cwd(directory)
                 lines: list[str] = []
                 ftp.retrlines("LIST", lines.append)
-                return [r for line in lines if (r := parse_line(line)) is not None]
+                return [r for line in lines if (r := parser(line)) is not None]
 
         return self._retry(_attempt)

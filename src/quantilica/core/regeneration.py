@@ -28,7 +28,7 @@ import io
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import BinaryIO, Literal
+from typing import BinaryIO, Literal, cast
 
 from .manifests import DownloadManifest
 
@@ -139,7 +139,8 @@ def _open_binary(
         magic = raw.read(2)
         raw.seek(raw.tell() - len(magic))
         if magic == b"\x1f\x8b":
-            gz = gzip.GzipFile(fileobj=raw)
+            # GzipFile is a binary stream; typeshed does not declare it BinaryIO
+            gz = cast(BinaryIO, gzip.GzipFile(fileobj=raw))
             owned.insert(0, gz)  # close the GzipFile before the file under it
             return gz, owned
     except BaseException:

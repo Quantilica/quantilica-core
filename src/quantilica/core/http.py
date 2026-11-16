@@ -43,7 +43,7 @@ from .manifests import (
 )
 from .ratelimit import HostGuard, looks_like_maintenance_html
 from .retry import RetryError, async_retry_call, exponential_delay, retry_call
-from .storage import validate_payload_signature
+from .storage import ExpectedFormat, validate_payload_signature
 
 ProgressCallback = Callable[[int, int], None]
 """Callback invoked as ``(downloaded_bytes, total_bytes)`` during a stream.
@@ -1152,7 +1152,7 @@ class HttpClient:
         max_bytes: int | None = None,
         expect_header: Callable[[bytes], bool] | None = None,
         allow_header_only: bool = True,
-        expected_format: str | None = None,
+        expected_format: ExpectedFormat | None = None,
         deduplicate_by_sha256: bool = False,
     ) -> Path:
         """Stream a URL to disk with freshness check, atomic write, and manifest.
@@ -2269,7 +2269,7 @@ class AsyncHttpClient:
         check_size: bool = True,
         progress: ProgressCallback | None = None,
         chunk_size: int = DEFAULT_STREAM_CHUNK_SIZE,
-        expected_format: str | None = None,
+        expected_format: ExpectedFormat | None = None,
     ) -> Path:
         """Stream a URL to disk asynchronously with freshness check and manifest.
 

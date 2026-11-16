@@ -346,13 +346,14 @@ def _msvcrt_lock(directory: Path, *, blocking: bool) -> Iterator[None]:
     ``LK_NBLCK`` fails at once on a held lock; blocking mode retries it, since
     ``LK_LOCK`` gives up after ten one-second attempts.
     """
+    win: Any = msvcrt  # Windows-only module: absent from the POSIX stubs
     directory.mkdir(parents=True, exist_ok=True)
     with (directory / LOCK_FILENAME).open("a+") as handle:
         fd = handle.fileno()
         while True:
             os.lseek(fd, 0, os.SEEK_SET)
             try:
-                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                win.locking(fd, win.LK_NBLCK, 1)
                 break
             except OSError as exc:
                 if not blocking:
@@ -364,7 +365,7 @@ def _msvcrt_lock(directory: Path, *, blocking: bool) -> Iterator[None]:
             yield
         finally:
             os.lseek(fd, 0, os.SEEK_SET)
-            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            win.locking(fd, win.LK_UNLCK, 1)
 
 
 class ConvertOutcome(Protocol):
@@ -455,10 +456,11 @@ def converter_inventory(converter: Any, input_dir: Path | str) -> list[Planned] 
     back to its heuristics. An empty list, by contrast, means the converter
     has an inventory and found nothing in ``input_dir``.
     """
-    inventory = getattr(converter, "inventory", None)
+    inventory: Any = getattr(converter, "inventory", None)
     if not callable(inventory):
         return None
-    return list(inventory(Path(input_dir)))
+    planned: Any = inventory(Path(input_dir))  # callable() narrows Any to object
+    return list(planned)
 
 
 def _version_stamp(name: str) -> str:
