@@ -357,7 +357,7 @@ def _rehash_forced() -> bool:
     return value not in ("", "0", "false", "no", "off")
 
 
-def trusted_sha256(path: str | Path) -> str:
+def trusted_sha256(path: str | os.PathLike[str]) -> str:
     """Return the SHA-256 of ``path``, reading the file only when it must.
 
     The digest recorded in the sidecar ``<path>.manifest.json`` is returned
