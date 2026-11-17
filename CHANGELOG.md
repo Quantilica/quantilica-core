@@ -6,6 +6,9 @@ O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
+### Adicionado
+- `trusted_sha256(path)` (em `quantilica.core.manifests`, exportada de `quantilica.core`): devolve o sha256 gravado no sidecar `<arquivo>.manifest.json` sem ler o arquivo, quando o sidecar é confiável (JSON válido, `sha256` de 64 hex, `size_bytes` igual ao tamanho atual e arquivo não mais novo que o sidecar, com tolerância de 2 s); caso contrário calcula lendo o arquivo (`sha256_file`). O sidecar é procurado ao lado do caminho informado, e não do alvo de um link simbólico (o tamanho e o `mtime` são os do alvo). `QUANTILICA_LAKE_REHASH=1` força sempre a leitura. Evita baixar o bruto inteiro a cada build quando ele está numa montagem de rede.
+
 ### Corrigido
 - `check_fetcher_docs`/`parse_variables_table`: nome de coluna com espaço nas pontas (o nome real da coluna no Parquet, como em alguns datasets de anac, inep, anp e datasus) passa a ser comparado exato. Na tabela de variáveis o nome vai entre crases e o texto entre elas vale literalmente (`` ` NOME ` `` é `" NOME "`); os espaços de fora das crases continuam sendo só o enchimento da tabela. Antes a célula era aparada e o check acusava divergência que não existia. Nome escrito na página que só difere do da coluna no esquema nos espaços das pontas (por exemplo, a página antiga que o escreve aparado) deixa de gerar erro e passa a gerar um **aviso** com o nome exato esperado.
 

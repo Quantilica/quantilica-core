@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -341,6 +343,74 @@ def manifest_sidecar_path(target: str | Path) -> Path:
     """
     target_path = Path(target)
     return target_path.with_suffix(target_path.suffix + MANIFEST_SIDECAR_SUFFIX)
+
+
+REHASH_ENV = "QUANTILICA_LAKE_REHASH"
+"""Environment variable that disables :func:`trusted_sha256`'s sidecar shortcut."""
+
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+_MTIME_TOLERANCE_S = 2.0
+
+
+def _rehash_forced() -> bool:
+    value = os.environ.get(REHASH_ENV, "").strip().lower()
+    return value not in ("", "0", "false", "no", "off")
+
+
+def trusted_sha256(path: str | Path) -> str:
+    """Return the SHA-256 of ``path``, reading the file only when it must.
+
+    The digest recorded in the sidecar ``<path>.manifest.json`` is returned
+    without reading the file when the sidecar can be trusted: it is valid JSON
+    with a 64-hex ``sha256``, its ``size_bytes`` equals the current size of the
+    file, and the file was not modified after the sidecar was written
+    (``mtime`` of the file at most 2 s newer than the sidecar's, for
+    coarse-grained filesystems). Otherwise, or when ``QUANTILICA_LAKE_REHASH``
+    is set to a true value (anything but empty, ``0``, ``false``, ``no`` or
+    ``off``), the file is read and hashed with :func:`sha256_file`.
+
+    The sidecar is looked up next to ``path`` itself, not next to its target
+    when ``path`` is a symlink; the size and ``mtime`` of the file are those of
+    the link target (``stat`` follows the link). This lets a view of symlinks
+    carry its own sidecars while the bytes stay on a slow mount that must not be
+    read on every run.
+
+    Args:
+        path: Path of the file.
+
+    Returns:
+        str: The lowercase SHA-256 hex digest.
+
+    Raises:
+        StorageError: If the digest is not trusted and the file cannot be read.
+    """
+    target = Path(path).expanduser()
+    if not _rehash_forced():
+        recorded = _sidecar_sha256(target)
+        if recorded is not None:
+            return recorded
+    return sha256_file(target)
+
+
+def _sidecar_sha256(target: Path) -> str | None:
+    """The sidecar's sha256 for ``target`` if it passes the trust rules, else None."""
+    sidecar = manifest_sidecar_path(target)
+    try:
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return None
+        size = int(payload.get("size_bytes") or 0)
+        sha = str(payload.get("sha256") or "").lower()
+        stat, sidecar_stat = target.stat(), sidecar.stat()
+    except (OSError, ValueError, TypeError):
+        return None
+    if not size or not _SHA256_HEX.fullmatch(sha):
+        return None
+    if size != stat.st_size:
+        return None
+    if stat.st_mtime > sidecar_stat.st_mtime + _MTIME_TOLERANCE_S:
+        return None
+    return sha
 
 
 def write_manifest_sidecar(

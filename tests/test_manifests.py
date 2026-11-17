@@ -1,4 +1,5 @@
 import json
+import os
 from dataclasses import replace
 
 import pytest
@@ -15,6 +16,7 @@ from quantilica.core.manifests import (
     RunManifest,
     SourceMetadata,
     read_manifest_sidecar,
+    trusted_sha256,
     write_manifest_sidecar,
 )
 
@@ -267,3 +269,179 @@ def test_read_manifest_sidecar_corrupt_warns_and_returns_none(tmp_path, caplog):
     with caplog.at_level("WARNING"):
         assert read_manifest_sidecar(target) is None
     assert "Invalid manifest" in caplog.text
+
+
+# --- trusted_sha256 -------------------------------------------------------
+
+FAKE_SHA = "ab" * 32  # not the real digest: proves the sidecar was believed
+
+
+@pytest.fixture
+def reads(monkeypatch):
+    """Records every file the fallback hashes (``sha256_file`` is the only reader)."""
+    import quantilica.core.manifests as mod
+
+    calls: list[str] = []
+    real = mod.sha256_file
+
+    def spy(path, *args, **kwargs):
+        calls.append(str(path))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(mod, "sha256_file", spy)
+    monkeypatch.delenv("QUANTILICA_LAKE_REHASH", raising=False)
+    return calls
+
+
+def _sidecar(target, *, sha=FAKE_SHA, size=None, mtime_offset=10):
+    """Write ``<target>.manifest.json`` and set its mtime after the file's."""
+    sidecar = target.parent / (target.name + ".manifest.json")
+    payload = {
+        "sha256": sha,
+        "size_bytes": target.stat().st_size if size is None else size,
+    }
+    sidecar.write_text(json.dumps(payload), encoding="utf-8")
+    base = target.stat().st_mtime
+    os.utime(sidecar, (base + mtime_offset, base + mtime_offset))
+    return sidecar
+
+
+def test_trusted_sha256_valid_sidecar_does_not_read_file(tmp_path, reads):
+    target = tmp_path / "data.bin"
+    target.write_bytes(b"payload")
+    _sidecar(target)
+    assert trusted_sha256(target) == FAKE_SHA
+    assert reads == []
+
+
+def test_trusted_sha256_accepts_str_and_uppercase_digest(tmp_path, reads):
+    target = tmp_path / "data.bin"
+    target.write_bytes(b"payload")
+    _sidecar(target, sha=FAKE_SHA.upper())
+    assert trusted_sha256(str(target)) == FAKE_SHA
+    assert reads == []
+
+
+def test_trusted_sha256_without_sidecar_reads_file(tmp_path, reads):
+    target = tmp_path / "data.bin"
+    target.write_bytes(b"payload")
+    assert trusted_sha256(target) == sha256_bytes(b"payload")
+    assert reads == [str(target)]
+
+
+def test_trusted_sha256_size_mismatch_reads_file(tmp_path, reads):
+    target = tmp_path / "data.bin"
+    target.write_bytes(b"payload")
+    _sidecar(target, size=3)
+    assert trusted_sha256(target) == sha256_bytes(b"payload")
+    assert reads == [str(target)]
+
+
+def test_trusted_sha256_newer_file_reads_file(tmp_path, reads):
+    target = tmp_path / "data.bin"
+    target.write_bytes(b"payload")
+    _sidecar(target, mtime_offset=-60)  # file is a minute newer than the sidecar
+    assert trusted_sha256(target) == sha256_bytes(b"payload")
+    assert reads == [str(target)]
+
+
+def test_trusted_sha256_tolerates_two_seconds_of_skew(tmp_path, reads):
+    target = tmp_path / "data.bin"
+    target.write_bytes(b"payload")
+    _sidecar(target, mtime_offset=-1)
+    assert trusted_sha256(target) == FAKE_SHA
+    assert reads == []
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "{not json",
+        "[]",
+        "null",
+        json.dumps({"sha256": "abc", "size_bytes": 7}),
+        json.dumps({"sha256": FAKE_SHA, "size_bytes": 0}),
+        json.dumps({"sha256": FAKE_SHA}),
+        json.dumps({"sha256": FAKE_SHA, "size_bytes": "x"}),
+        json.dumps({"sha256": 5, "size_bytes": 7}),
+    ],
+)
+def test_trusted_sha256_broken_sidecar_reads_file(tmp_path, reads, content):
+    target = tmp_path / "data.bin"
+    target.write_bytes(b"payload")
+    sidecar = _sidecar(target)
+    sidecar.write_text(content, encoding="utf-8")
+    assert trusted_sha256(target) == sha256_bytes(b"payload")
+    assert reads == [str(target)]
+
+
+def test_trusted_sha256_rehash_env_forces_read(tmp_path, reads, monkeypatch):
+    target = tmp_path / "data.bin"
+    target.write_bytes(b"payload")
+    _sidecar(target)
+    monkeypatch.setenv("QUANTILICA_LAKE_REHASH", "1")
+    assert trusted_sha256(target) == sha256_bytes(b"payload")
+    assert reads == [str(target)]
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "off"])
+def test_trusted_sha256_rehash_env_falsey_values_keep_shortcut(
+    tmp_path, reads, monkeypatch, value
+):
+    target = tmp_path / "data.bin"
+    target.write_bytes(b"payload")
+    _sidecar(target)
+    monkeypatch.setenv("QUANTILICA_LAKE_REHASH", value)
+    assert trusted_sha256(target) == FAKE_SHA
+    assert reads == []
+
+
+def test_trusted_sha256_symlink_with_sidecar_next_to_link(tmp_path, reads):
+    store = tmp_path / "store"
+    view = tmp_path / "view"
+    store.mkdir()
+    view.mkdir()
+    real = store / "data.bin"
+    real.write_bytes(b"payload")
+    link = view / "data.bin"
+    link.symlink_to(real)
+    _sidecar(link)  # sidecar sits beside the link, none beside the target
+    assert not (store / "data.bin.manifest.json").exists()
+    assert trusted_sha256(link) == FAKE_SHA
+    assert reads == []
+
+
+def test_trusted_sha256_symlink_size_is_the_targets(tmp_path, reads):
+    store = tmp_path / "store"
+    view = tmp_path / "view"
+    store.mkdir()
+    view.mkdir()
+    real = store / "data.bin"
+    real.write_bytes(b"payload")
+    link = view / "data.bin"
+    link.symlink_to(real)
+    # a link's own lstat size is the length of its target path, never 7
+    _sidecar(link, size=len(str(real)))
+    assert trusted_sha256(link) == sha256_bytes(b"payload")
+    assert reads == [str(link)]
+
+
+def test_trusted_sha256_missing_file_raises(tmp_path, reads):
+    from quantilica.core.exceptions import StorageError
+
+    with pytest.raises(StorageError):
+        trusted_sha256(tmp_path / "absent.bin")
+
+
+def test_trusted_sha256_matches_manifest_written_by_core(tmp_path, reads):
+    target = tmp_path / "data.bin"
+    target.write_bytes(b"payload")
+    manifest = DownloadManifest.from_file(
+        source_id="s", dataset_id="d", url="http://x", file_path=target
+    )
+    write_manifest_sidecar(target, manifest)
+    sidecar = tmp_path / "data.bin.manifest.json"
+    os.utime(sidecar, (target.stat().st_mtime + 5,) * 2)
+    reads.clear()  # from_file hashed the file to build the manifest
+    assert trusted_sha256(target) == sha256_bytes(b"payload")
+    assert reads == []

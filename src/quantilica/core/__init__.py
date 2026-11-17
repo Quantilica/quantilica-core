@@ -49,6 +49,7 @@ from .manifests import (
     ExecutionManifest,
     RunManifest,
     read_manifest_sidecar,
+    trusted_sha256,
     write_manifest_sidecar,
 )
 from .odata import (
@@ -150,6 +151,7 @@ __all__ = [
     "remote_zip_members",
     "select_current",
     "should_skip",
+    "trusted_sha256",
     "validate_payload_signature",
     "with_content_hash",
     "write_manifest_sidecar",
