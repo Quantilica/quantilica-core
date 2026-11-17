@@ -375,6 +375,14 @@ def trusted_sha256(path: str | os.PathLike[str]) -> str:
     carry its own sidecars while the bytes stay on a slow mount that must not be
     read on every run.
 
+    **What the shortcut guarantees.** In practice, the check that protects is the
+    size. The ``mtime`` rule only catches a file rewritten *after* its sidecar was
+    made on the same machine; the ``mtime`` of a downloaded raw file is usually
+    the server's ``Last-Modified``, almost always older than the sidecar, so a file
+    replaced by different bytes of the same size (and an old ``mtime``) is not
+    noticed. To detect swapped content of the same size, set
+    ``QUANTILICA_LAKE_REHASH=1`` or run an audit that reads the files.
+
     Args:
         path: Path of the file.
 
