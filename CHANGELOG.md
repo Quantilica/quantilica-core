@@ -6,6 +6,8 @@ O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
+
+## [0.26.0] - 2026-11-18
 ### Adicionado
 - `trusted_sha256(path)` (em `quantilica.core.manifests`, exportada de `quantilica.core`): devolve o sha256 gravado no sidecar `<arquivo>.manifest.json` sem ler o arquivo, quando o sidecar é confiável (JSON válido, `sha256` de 64 hex, `size_bytes` igual ao tamanho atual e arquivo não mais novo que o sidecar, com tolerância de 2 s); caso contrário calcula lendo o arquivo (`sha256_file`). O sidecar é procurado ao lado do caminho informado, e não do alvo de um link simbólico (o tamanho e o `mtime` são os do alvo). `QUANTILICA_LAKE_REHASH=1` força sempre a leitura. Evita baixar o bruto inteiro a cada build quando ele está numa montagem de rede. **Limite da garantia:** na prática o que protege é o tamanho. O `mtime` do bruto baixado costuma ser o `Last-Modified` do servidor, quase sempre mais velho que o sidecar, então a regra do `mtime` só pega arquivo regravado depois do sidecar na mesma máquina; um arquivo trocado por outro conteúdo do mesmo tamanho não é percebido. Para detectar isso, use `QUANTILICA_LAKE_REHASH=1` ou uma auditoria que leia os arquivos.
 
