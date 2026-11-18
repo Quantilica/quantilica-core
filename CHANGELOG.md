@@ -6,6 +6,8 @@ O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
+### Alterado
+- `profile_from_lake`: um Parquet agrupado em `ano=AAAA/` (sem `mes=` no caminho) cujos membros do rodapé `quantilica.members` têm todos a coluna de membro `mes` passa a ter perfil `mensal`, com períodos `AAAA-MM`, em vez de um período anual que somava os retratos de todos os meses. Tudo é exato e vem só do rodapé: `linhas` do mês é a soma de `rows` dos membros dele; os nulos de cada coluna são a soma de `null_counts[coluna]` dos membros do mês que a trazem (estatística gravada por `LakeWriter.write_group(member_stats=True)`, do `quantilica-analytics`), mais as `rows` dos membros do mês que não a trazem; coluna que nenhum membro do mês traz fica `None` naquele mês (a coluna não existia ali), de modo que `derivar_eras` enxerga as colunas que entram no meio do ano. Meses com soma de `rows` 0 são descartados. Membro sem `null_counts` nesse caminho levanta `ValueError` (regrave o arquivo com a estatística); não há aproximação. O formato do documento do perfil não muda (`versao` continua 1, sem chave nova). Membros sem `mes`, ou arquivo sem membros, continuam `anual`; `mes` só em parte dos membros, fora de 1-12 ou `rows` que não somam o `num_rows` do arquivo levantam `ValueError`; misturar esse tipo de arquivo com `ano=/mes=` ou com arquivos anuais é granularidade mista (`ValueError`).
 
 ## [0.26.0] - 2026-11-18
 ### Adicionado

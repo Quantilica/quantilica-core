@@ -27,6 +27,25 @@ Regras de cálculo
   por arquivo.
   Subpartições além de ``ano``/``mes`` (por exemplo ``uf=SP``) não definem
   período: os arquivos do mesmo período são somados.
+- **Mês vindo do membro**: um Parquet agrupado em ``ano=AAAA/`` (sem ``mes=`` no
+  caminho) cujos membros do rodapé ``quantilica.members`` trazem todos a coluna
+  de membro ``mes`` (``{"mes": "05"}``) é uma fonte mensal: o perfil passa a
+  ``"mensal"`` com um período ``AAAA-MM`` por mês. Tudo é exato e vem só do
+  rodapé: ``linhas`` do mês é a soma de ``rows`` dos membros dele, e os nulos de
+  cada coluna são a soma de ``null_counts[coluna]`` dos membros que a trazem (a
+  estatística que ``LakeWriter.write_group(member_stats=True)`` grava), mais as
+  ``rows`` dos membros do mês que não a trazem (no arquivo, as linhas deles são
+  nulas nela, como num mês com vários arquivos). Uma coluna que
+  nenhum membro do mês traz em ``null_counts`` fica ``None`` naquele mês (a
+  coluna não existia ali), como num lake ``ano=/mes=``. Meses cuja soma de
+  ``rows`` é 0 são descartados (membros vazios não esticam a cobertura). Membro
+  sem ``null_counts`` nesse caminho levanta ``ValueError``: o arquivo precisa ser
+  regravado com a estatística; não há aproximação. Membros sem ``mes`` (ou
+  arquivo sem membros) seguem ``"anual"``; ``mes`` só em parte dos membros, fora
+  de 1-12 ou linhas que não somam o ``num_rows`` do arquivo levantam
+  ``ValueError``. Misturar esse tipo de arquivo com arquivos ``ano=/mes=`` (ou com
+  anuais) no mesmo dataset é granularidade mista (``ValueError``). Só o ``mes`` é
+  lido do membro; nenhuma outra coluna de membro define período.
 - ``linhas[i]`` é a soma de ``num_rows`` de todos os arquivos do período ``i``;
   ``nulos[i]`` de cada coluna é a soma dos ``null_count`` de todos os grupos de
   linhas de todos os arquivos do período.
@@ -104,6 +123,8 @@ _INTEIRO = re.compile(r"[0-9]+")
 _SUBPERIOD_KEYS = ("semestre", "trimestre", "mes", "dia")
 GRANULARIDADES = ("anual", "semestral", "trimestral", "mensal", "diaria")
 META_MEMBER_COLUMNS = "quantilica.member_columns"
+META_MEMBERS = "quantilica.members"
+_MENSAL_POR_MEMBRO = "mensal por membro"
 
 
 class DatasetSemPeriodoError(ValueError):
@@ -289,24 +310,49 @@ def _null_count(pf: Any, leaf: dict[str, int], field: Any, groups: range) -> int
     )
 
 
-def _file_stats(pq: Any, file: Path) -> tuple[int, _ColStats, list[str]]:
-    """``(linhas, {coluna: (tipo_arrow, nulos)}, colunas de membro)`` de um arquivo.
+@dataclass
+class _FileStats:
+    """O que o rodapé de um arquivo diz.
 
-    Tudo pelo rodapé; só lê dados quando a coluna é aninhada ou o arquivo foi
-    escrito sem estatísticas.
+    ``cols``: ``{coluna: (tipo_arrow, nulos)}`` do arquivo inteiro. ``monthly``:
+    só em arquivo agrupado cujos membros têm ``mes``: ``{AAAA-MM: (linhas,
+    {coluna: (tipo_arrow, nulos)})}``; então ``cols`` fica vazio.
+    """
+
+    rows: int
+    cols: _ColStats
+    member_columns: list[str]
+    monthly: dict[str, tuple[int, _ColStats]] | None = None
+
+
+def _file_stats(pq: Any, file: Path, ano: str | None = None) -> _FileStats:
+    """Estatísticas de um arquivo, pelo rodapé.
+
+    Só lê dados quando a coluna é aninhada ou o arquivo foi escrito sem
+    estatísticas (o caminho mensal por membro nunca lê dados). Com ``ano`` (o
+    arquivo está em ``ano=AAAA/`` sem ``mes=``) e membros que trazem ``mes``,
+    devolve as estatísticas por mês (``monthly``).
     """
     pf = pq.ParquetFile(file)
     try:
         meta = pf.metadata
         leaf = _leaf_index(meta)
+        kv = meta.metadata or {}
+        raw = kv.get(META_MEMBER_COLUMNS.encode(), b"[]")
+        members = _member_columns(raw.decode(errors="replace"))
+        if ano is not None:
+            months = _member_months(
+                _members_entries(kv.get(META_MEMBERS.encode())), meta.num_rows, file
+            )
+            if months is not None:
+                monthly = _monthly_stats(pf, months, ano)
+                return _FileStats(meta.num_rows, {}, members, monthly)
         everything = range(meta.num_row_groups)
         out: _ColStats = {
             f.name: (str(f.type), _null_count(pf, leaf, f, everything))
             for f in pf.schema_arrow
         }
-        raw = (meta.metadata or {}).get(META_MEMBER_COLUMNS.encode(), b"[]")
-        members = _member_columns(raw.decode(errors="replace"))
-        return meta.num_rows, out, members
+        return _FileStats(meta.num_rows, out, members)
     finally:
         pf.close()
 
@@ -318,6 +364,108 @@ def _member_columns(raw: str) -> list[str]:
     except ValueError:
         return []
     return [n for n in names if isinstance(n, str)] if isinstance(names, list) else []
+
+
+def _members_entries(raw: bytes | None) -> list[Mapping[str, Any]]:
+    """Entradas de ``quantilica.members`` (``[]`` se ausente ou ilegível)."""
+    if raw is None:
+        return []
+    try:
+        members = json.loads(raw.decode(errors="replace"))
+    except ValueError:
+        return []
+    if not isinstance(members, dict):
+        return []
+    return [e for e in members.values() if isinstance(e, dict)]
+
+
+def _member_months(
+    entries: list[Mapping[str, Any]], num_rows: int, file: Path
+) -> dict[int, list[Mapping[str, Any]]] | None:
+    """Membros por mês (``{1..12: [entradas]}``), ou ``None`` sem ``mes``.
+
+    ``None`` quando não há membros ou nenhum tem ``mes``. ``mes`` em só parte dos
+    membros, inválido, ``rows`` inválido, soma diferente do ``num_rows`` do
+    arquivo ou membro sem ``null_counts`` levantam ``ValueError``.
+    """
+    with_mes = [e for e in entries if e.get("mes") is not None]
+    if not with_mes:
+        return None
+    if len(with_mes) != len(entries):
+        raise ValueError(
+            f"membros sem mes em {file} ({len(with_mes)} de {len(entries)})"
+        )
+    months: dict[int, list[Mapping[str, Any]]] = {}
+    total = 0
+    for entry in with_mes:
+        mes = _month_number(entry["mes"])
+        rows = entry.get("rows")
+        if mes is None:
+            raise ValueError(f"mes de membro inválido em {file}: {entry['mes']!r}")
+        if not isinstance(rows, int) or isinstance(rows, bool) or rows < 0:
+            raise ValueError(f"rows de membro inválido em {file}: {rows!r}")
+        if not isinstance(entry.get("null_counts"), dict):
+            raise ValueError(
+                f"membro sem null_counts em {file} (origem "
+                f"{entry.get('origin_file')!r}): regrave o arquivo com a "
+                "estatística de nulos por membro (member_stats=True)"
+            )
+        months.setdefault(mes, []).append(entry)
+        total += rows
+    if total != num_rows:
+        raise ValueError(
+            f"membros de {file} somam {total} linhas, mas o arquivo tem {num_rows}"
+        )
+    return months
+
+
+def _month_number(value: Any) -> int | None:
+    """Mês 1-12 de ``"05"``, ``"5"`` ou ``5``; ``None`` se não for um mês."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str) and _INTEIRO.fullmatch(value):
+        value = int(value)
+    return value if isinstance(value, int) and 1 <= value <= 12 else None
+
+
+def _monthly_stats(
+    pf: Any, months: dict[int, list[Mapping[str, Any]]], ano: str
+) -> dict[str, tuple[int, _ColStats]]:
+    """Linhas e nulos exatos por mês de um arquivo agrupado, só pelos membros.
+
+    Linhas do mês: soma de ``rows``; nulos de uma coluna: soma de
+    ``null_counts[coluna]`` dos membros que a trazem, mais as ``rows`` dos membros do
+    mesmo mês que não a trazem (suas linhas são nulas nela no arquivo). Coluna que
+    nenhum membro do mês traz fica fora do mês (``None`` no perfil). Mês sem
+    linhas é descartado.
+    """
+    types = {f.name: str(f.type) for f in pf.schema_arrow}
+    out: dict[str, tuple[int, _ColStats]] = {}
+    for mes in sorted(months):
+        rows = sum(int(e["rows"]) for e in months[mes])
+        if rows == 0:
+            continue
+        nulls: dict[str, int] = {}
+        for entry in months[mes]:
+            for name, n in entry["null_counts"].items():
+                if name not in types:
+                    continue
+                if not isinstance(n, int) or isinstance(n, bool) or n < 0:
+                    raise ValueError(
+                        f"null_counts inválido em {entry.get('origin_file')!r}: "
+                        f"{name}={n!r}"
+                    )
+                nulls[name] = nulls.get(name, 0) + n
+        # Membro do mês que não traz a coluna (outro traz): no arquivo, as linhas
+        # dele são nulas nela; conta como num mês de vários arquivos do lake.
+        for entry in months[mes]:
+            for name in nulls.keys() - entry["null_counts"].keys():
+                nulls[name] += int(entry["rows"])
+        out[f"{int(ano):04d}-{mes:02d}"] = (
+            rows,
+            {name: (types[name], min(n, rows)) for name, n in nulls.items()},
+        )
+    return out
 
 
 def profile_from_lake(
@@ -369,17 +517,27 @@ def profile_from_lake(
             f"(ex.: {no_period[0]})"
         )
 
-    stats = {file: _file_stats(pq, file) for file in files}
-    for _, _, member_columns in stats.values():
-        excluded.update(member_columns)
+    stats = {
+        file: _file_stats(pq, file, period if gran == "anual" else None)
+        for file, (period, gran) in found_by_file.items()
+    }
+    for fs in stats.values():
+        excluded.update(fs.member_columns)
 
     grans: set[str] = set()
     by_period: dict[str, list[tuple[int, _ColStats]]] = {}
     for file, (period, gran) in found_by_file.items():
-        grans.add(gran)
-        by_period.setdefault(period, []).append((stats[file][0], stats[file][1]))
+        fs = stats[file]
+        if fs.monthly is None:
+            grans.add(gran)
+            by_period.setdefault(period, []).append((fs.rows, fs.cols))
+            continue
+        grans.add(_MENSAL_POR_MEMBRO)
+        for mes_period, (rows, cols) in fs.monthly.items():
+            by_period.setdefault(mes_period, []).append((rows, cols))
     if len(grans) > 1:
         raise ValueError(f"granularidade mista ({', '.join(sorted(grans))}) em {base}")
+    granularidade = "mensal" if grans == {_MENSAL_POR_MEMBRO} else next(iter(grans))
 
     periodos = sorted(by_period)
     linhas: list[int] = []
@@ -411,7 +569,7 @@ def profile_from_lake(
     }
     perfil = {
         "versao": PROFILE_VERSION,
-        "granularidade": grans.pop(),
+        "granularidade": granularidade,
         "periodos": periodos,
         "linhas": linhas,
         "colunas": colunas_doc,

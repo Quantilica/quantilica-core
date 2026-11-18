@@ -400,24 +400,258 @@ def write_grouped(
     return path
 
 
-def entry(rows: int, **cols) -> dict:
-    return {"origin_file": "x.csv", "origin_sha256": "0" * 64, "rows": rows, **cols}
+def entry(rows: int, null_counts: dict | None = None, **cols) -> dict:
+    out = {"origin_file": "x.csv", "origin_sha256": "0" * 64, "rows": rows, **cols}
+    if null_counts is not None:
+        out["null_counts"] = null_counts
+    return out
 
 
-def test_mes_de_membro_nao_define_periodo(tmp_path: Path) -> None:
+def test_mes_de_membro_define_periodo_mensal(tmp_path: Path) -> None:
     base = tmp_path / "alfa" / "sigtap"
     write_grouped(
         base,
         "ano=2024/sigtap_2024.parquet",
-        {"a": entry(2, mes=1), "b": entry(3, mes=2)},
-        {"v": [1, None, 3, None, None], "mes": [1, 1, 2, 2, 2]},
+        {
+            "a": entry(2, {"v": 1}, mes="01"),
+            "b": entry(3, {"v": 2}, mes="02"),
+        },
+        {"v": [1, None, 3, None, None], "mes": ["01", "01", "02", "02", "02"]},
         member_columns=["mes"],
     )
     res = profile_from_lake(tmp_path, "alfa", "sigtap")
-    assert res.perfil["granularidade"] == "anual"  # a pasta manda
-    assert res.perfil["periodos"] == ["2024"]
-    assert res.perfil["linhas"] == [5]
+    assert res.perfil["granularidade"] == "mensal"
+    assert res.perfil["periodos"] == ["2024-01", "2024-02"]
+    assert res.perfil["linhas"] == [2, 3]
     assert set(res.perfil["colunas"]) == {"v"}  # mes é coluna de membro
+    # exato por membro, sem chave extra no documento
+    assert res.perfil["colunas"]["v"] == {"nulos": [1, 2]}
+    assert set(res.perfil) == {
+        "versao",
+        "granularidade",
+        "periodos",
+        "linhas",
+        "colunas",
+    }
+    assert res.perfil["versao"] == 1
+    assert [c["periodo_inicio"] for c in res.colunas] == ["2024-01"]
+
+
+def test_mensal_por_membro_independe_dos_grupos_de_linhas(tmp_path: Path) -> None:
+    base = tmp_path / "alfa" / "sigtap"
+    members = {
+        "a": entry(3, {"v": 2, "cheia": 0}, mes="01"),
+        "b": entry(2, {"v": 0, "cheia": 0}, mes="02"),
+        "c": entry(2, {"v": 1, "cheia": 0}, mes="03"),
+    }
+    meses = ["01"] * 3 + ["02"] * 2 + ["03"] * 2
+    path = base / "ano=2024/sigtap_2024.parquet"
+    path.parent.mkdir(parents=True)
+    table = pa.table(
+        {
+            "v": [1, None, None, 4, 5, None, 7],
+            "cheia": [1, 2, 3, 4, 5, 6, 7],
+            "mes": meses,
+        }
+    ).replace_schema_metadata(
+        {
+            "quantilica.members": json.dumps(members),
+            "quantilica.member_columns": json.dumps(["mes"]),
+        }
+    )
+    docs = []
+    for size in (1, 3, 7):  # um grupo cobrindo o ano todo é o caso do SIGTAP
+        pq.write_table(table, path, row_group_size=size)
+        res = profile_from_lake(tmp_path, "alfa", "sigtap")
+        assert res.perfil["linhas"] == [3, 2, 2]
+        assert res.perfil["colunas"]["v"] == {"nulos": [2, 0, 1]}
+        assert res.perfil["colunas"]["cheia"] == {"nulos": [0, 0, 0]}
+        docs.append(res.perfil)
+    assert docs[0] == docs[1] == docs[2]
+
+
+def test_mensal_por_membro_coluna_que_entra_no_meio_do_ano(tmp_path: Path) -> None:
+    base = tmp_path / "alfa" / "sigtap"
+    write_grouped(
+        base,
+        "ano=2024/s.parquet",
+        {
+            "a": entry(2, {"v": 0}, mes="01"),
+            "b": entry(2, {"v": 1, "nova": 2}, mes="02"),
+            "c": entry(1, {"v": 0, "nova": 0}, mes="03"),
+            "d": entry(2, {"v": 0, "nova": 1}, mes="03"),
+        },
+        {
+            "v": [1, 2, 3, None, 5, 6, 7],
+            "nova": [None, None, None, None, 5, 6, None],
+            "mes": ["01", "01", "02", "02", "03", "03", "03"],
+        },
+        member_columns=["mes"],
+    )
+    res = profile_from_lake(tmp_path, "alfa", "sigtap")
+    assert res.perfil["periodos"] == ["2024-01", "2024-02", "2024-03"]
+    assert res.perfil["linhas"] == [2, 2, 3]
+    assert res.perfil["colunas"]["v"]["nulos"] == [0, 1, 0]
+    # nenhum membro de janeiro traz "nova": None, e não "2 nulos de 2"
+    assert res.perfil["colunas"]["nova"]["nulos"] == [None, 2, 1]
+    nova = next(c for c in res.colunas if c["nome"] == "nova")
+    assert (nova["periodo_inicio"], nova["periodo_fim"]) == ("2024-02", "2024-03")
+    eras = derivar_eras(res.perfil)
+    assert [(e["inicio"], e["fim"], e["entrou"]) for e in eras] == [
+        ("2024-01", "2024-01", []),
+        ("2024-02", "2024-03", ["nova"]),
+    ]
+
+
+def test_mensal_por_membro_mes_sem_linhas_e_descartado(tmp_path: Path) -> None:
+    base = tmp_path / "alfa" / "sigtap"
+    write_grouped(
+        base,
+        "ano=2024/s.parquet",
+        {
+            "a": entry(2, {"v": 1}, mes="02"),
+            "vazio": entry(0, {"v": 0}, mes="01"),
+            "vazio2": entry(0, {"v": 0}, mes="12"),
+        },
+        {"v": [1, None], "mes": ["02", "02"]},
+        member_columns=["mes"],
+    )
+    res = profile_from_lake(tmp_path, "alfa", "sigtap")
+    assert res.perfil["periodos"] == ["2024-02"]
+    assert res.perfil["linhas"] == [2]
+    assert res.perfil["colunas"]["v"] == {"nulos": [1]}
+
+
+def test_mensal_por_membro_soma_membros_do_mesmo_mes(tmp_path: Path) -> None:
+    base = tmp_path / "alfa" / "sigtap"
+    write_grouped(
+        base,
+        "ano=2024/s.parquet",
+        {
+            "a": entry(2, {"v": 1}, mes="01"),
+            "b": entry(2, {"v": 2, "w": 0}, mes="01"),
+        },
+        {"v": [1, None, None, None], "w": [1, 2, 3, 4], "mes": ["01"] * 4},
+        member_columns=["mes"],
+    )
+    res = profile_from_lake(tmp_path, "alfa", "sigtap")
+    assert res.perfil["linhas"] == [4]
+    assert res.perfil["colunas"]["v"] == {"nulos": [3]}
+    # "w" só em um dos dois membros: o outro não tinha a coluna e conta como nulo
+    # inteiro, igual a dois arquivos do mesmo período num lake ano=/mes=
+    assert res.perfil["colunas"]["w"] == {"nulos": [2]}
+
+
+def test_mensal_por_membro_varios_anos_e_hash(tmp_path: Path) -> None:
+    base = tmp_path / "alfa" / "sigtap"
+    for ano in (2023, 2024):
+        write_grouped(
+            base,
+            f"ano={ano}/t.parquet",
+            {"a": entry(1, {"v": 0}, mes="12"), "b": entry(2, {"v": 0}, mes="1")},
+            {"v": [1, 2, 3], "mes": ["12", "01", "01"]},
+            member_columns=["mes"],
+        )
+    res = profile_from_lake(tmp_path, "alfa", "sigtap")
+    assert res.perfil["periodos"] == ["2023-01", "2023-12", "2024-01", "2024-12"]
+    assert res.perfil["linhas"] == [2, 1, 2, 1]
+    assert res.perfil["colunas"]["v"] == {"nulos": [0, 0, 0, 0]}
+    assert res.perfil_sha256 == perfil_sha256(res.perfil)
+    again = profile_from_lake(tmp_path, "alfa", "sigtap")  # regravar não muda
+    assert again.perfil_sha256 == res.perfil_sha256
+
+
+def test_mensal_por_membro_sem_null_counts_e_erro(tmp_path: Path) -> None:
+    write_grouped(
+        tmp_path / "alfa" / "d",
+        "ano=2024/a.parquet",
+        {"a": entry(1, {"v": 0}, mes="01"), "b": entry(1, mes="02")},
+        {"v": [1, 2], "mes": ["01", "02"]},
+        member_columns=["mes"],
+    )
+    with pytest.raises(ValueError, match="null_counts"):
+        profile_from_lake(tmp_path, "alfa", "d")
+
+
+def test_ano_sem_membros_segue_anual(tmp_path: Path) -> None:
+    base = tmp_path / "alfa" / "d"
+    write(base, "ano=2024/a.parquet", {"v": [1, None]})
+    res = profile_from_lake(tmp_path, "alfa", "d")
+    assert res.perfil["granularidade"] == "anual"
+    assert res.perfil["periodos"] == ["2024"]
+    assert res.perfil["linhas"] == [2]
+
+
+def test_membros_sem_mes_seguem_anual(tmp_path: Path) -> None:
+    base = tmp_path / "alfa" / "d"
+    write_grouped(
+        base,
+        "ano=2024/a.parquet",
+        {"a": entry(2, uf="SP"), "b": entry(1, uf="RJ")},
+        {"v": [1, None, 3], "uf": ["SP", "SP", "RJ"]},
+        member_columns=["uf"],
+    )
+    res = profile_from_lake(tmp_path, "alfa", "d")
+    assert res.perfil["granularidade"] == "anual"
+    assert res.perfil["periodos"] == ["2024"]
+    assert res.perfil["linhas"] == [3]
+    assert res.perfil["colunas"]["v"] == {"nulos": [1]}
+
+
+def test_mensal_por_membro_misturado_com_particao_mes_e_erro(tmp_path: Path) -> None:
+    base = tmp_path / "alfa" / "d"
+    write_grouped(
+        base,
+        "ano=2024/a.parquet",
+        {"a": entry(1, {"v": 0}, mes="01")},
+        {"v": [1], "mes": ["01"]},
+        member_columns=["mes"],
+    )
+    write(base, "ano=2025/mes=01/b.parquet", {"v": [1]})
+    with pytest.raises(ValueError, match="mista"):
+        profile_from_lake(tmp_path, "alfa", "d")
+
+
+def test_mensal_por_membro_misturado_com_anual_e_erro(tmp_path: Path) -> None:
+    base = tmp_path / "alfa" / "d"
+    write_grouped(
+        base,
+        "ano=2024/a.parquet",
+        {"a": entry(1, {"v": 0}, mes="01")},
+        {"v": [1], "mes": ["01"]},
+        member_columns=["mes"],
+    )
+    write(base, "ano=2023/b.parquet", {"v": [1]})
+    with pytest.raises(ValueError, match="mista"):
+        profile_from_lake(tmp_path, "alfa", "d")
+
+
+@pytest.mark.parametrize(
+    ("members", "mes", "match"),
+    [
+        (
+            {"a": entry(1, {"v": 0}, mes="01"), "b": entry(1, {"v": 0})},
+            ["01", "01"],
+            "sem mes",
+        ),
+        ({"a": entry(2, {"v": 0}, mes="13")}, ["13", "13"], "inválido"),
+        ({"a": entry(2, {"v": 0}, mes="ab")}, ["ab", "ab"], "inválido"),
+        ({"a": entry(5, {"v": 0}, mes="01")}, ["01", "01"], "somam 5"),
+        ({"a": entry(2, {"v": -1}, mes="01")}, ["01", "01"], "null_counts inválido"),
+    ],
+)
+def test_mensal_por_membro_rodape_inconsistente(
+    tmp_path: Path, members: dict, mes: list[str], match: str
+) -> None:
+    write_grouped(
+        tmp_path / "alfa" / "d",
+        "ano=2024/a.parquet",
+        members,
+        {"v": [1, 2], "mes": mes},
+        member_columns=["mes"],
+    )
+    with pytest.raises(ValueError, match=match):
+        profile_from_lake(tmp_path, "alfa", "d")
 
 
 def test_competencia_e_periodo_mensal(tmp_path: Path) -> None:
