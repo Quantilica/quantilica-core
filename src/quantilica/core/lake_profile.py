@@ -443,17 +443,23 @@ def _monthly_stats(
     out: dict[str, tuple[int, _ColStats]] = {}
     for mes in sorted(months):
         rows = sum(int(e["rows"]) for e in months[mes])
-        if rows == 0:
-            continue
         nulls: dict[str, int] = {}
         for entry in months[mes]:
+            origem = entry.get("origin_file")
             for name, n in entry["null_counts"].items():
                 if name not in types:
-                    continue
+                    raise ValueError(
+                        f"null_counts de {origem!r} cita a coluna {name!r}, que "
+                        "não existe no esquema do arquivo"
+                    )
                 if not isinstance(n, int) or isinstance(n, bool) or n < 0:
                     raise ValueError(
-                        f"null_counts inválido em {entry.get('origin_file')!r}: "
-                        f"{name}={n!r}"
+                        f"null_counts inválido em {origem!r}: {name}={n!r}"
+                    )
+                if n > int(entry["rows"]):
+                    raise ValueError(
+                        f"null_counts de {origem!r}: {name}={n} é maior que as "
+                        f"{entry['rows']} linhas do membro"
                     )
                 nulls[name] = nulls.get(name, 0) + n
         # Membro do mês que não traz a coluna (outro traz): no arquivo, as linhas
@@ -461,9 +467,11 @@ def _monthly_stats(
         for entry in months[mes]:
             for name in nulls.keys() - entry["null_counts"].keys():
                 nulls[name] += int(entry["rows"])
+        if rows == 0:  # validado acima; o mês sem linhas não entra no perfil
+            continue
         out[f"{int(ano):04d}-{mes:02d}"] = (
             rows,
-            {name: (types[name], min(n, rows)) for name, n in nulls.items()},
+            {name: (types[name], nulls[name]) for name in types if name in nulls},
         )
     return out
 

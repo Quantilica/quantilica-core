@@ -769,3 +769,47 @@ def test_schema_from_lake_sem_particao_ano_omite_periodos(tmp_path: Path) -> Non
     write(tmp_path / "alfa" / "d", "p.parquet", {"a": [1]})
     schema = schema_from_lake(tmp_path, "alfa", "d")
     assert schema["colunas"] == [{"nome": "a", "tipos": ["int64"]}]
+
+
+def test_mensal_por_membro_colunas_na_ordem_do_esquema(tmp_path: Path) -> None:
+    write_grouped(
+        tmp_path / "alfa" / "d",
+        "ano=2024/a.parquet",
+        {"a": entry(2, {"m": 0, "z": 0, "b": 1}, mes="01")},
+        {"z": [1, 2], "b": [None, 1], "m": [1, 2], "mes": ["01", "01"]},
+        member_columns=["mes"],
+    )
+    res = profile_from_lake(tmp_path, "alfa", "d")
+    assert [c["nome"] for c in res.colunas] == ["z", "b", "m"]
+
+
+def test_mensal_por_membro_nulos_acima_das_linhas_e_erro(tmp_path: Path) -> None:
+    write_grouped(
+        tmp_path / "alfa" / "d",
+        "ano=2024/a.parquet",
+        {"a": entry(2, {"v": 3}, mes="01")},
+        {"v": [None, None], "mes": ["01", "01"]},
+        member_columns=["mes"],
+    )
+    with pytest.raises(ValueError, match="maior que"):
+        profile_from_lake(tmp_path, "alfa", "d")
+
+
+@pytest.mark.parametrize("rows", [2, 0])
+def test_mensal_por_membro_coluna_fora_do_esquema_e_erro(
+    tmp_path: Path, rows: int
+) -> None:
+    write_grouped(
+        tmp_path / "alfa" / "d",
+        "ano=2024/a.parquet",
+        {
+            "a": entry(2, {"v": 0}, mes="01"),
+            "b": entry(0, {"fantasma": 0}, mes="02"),
+        }
+        if rows == 0
+        else {"a": entry(2, {"v": 0, "fantasma": 0}, mes="01")},
+        {"v": [1, 2], "mes": ["01", "01"]},
+        member_columns=["mes"],
+    )
+    with pytest.raises(ValueError, match="fantasma"):
+        profile_from_lake(tmp_path, "alfa", "d")
