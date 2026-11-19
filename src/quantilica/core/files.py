@@ -15,7 +15,7 @@ import tempfile
 import time
 import warnings
 import zipfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO
@@ -660,15 +660,19 @@ def _resolve_output_dir(output_dir: Path | str | None) -> Path:
     return dest
 
 
-def _safe_zip_extract(archive: Path, dest: Path) -> list[Path]:
+def _safe_zip_extract(archive: Path, dest: Path) -> tuple[list[Path], int]:
     """Extract a ZIP archive, guarding every member against Zip Slip.
+
+    Junk members (:func:`_is_junk_name`) are checked like any other but never
+    written to ``dest``.
 
     Args:
         archive: Path to the ``.zip`` archive.
         dest: Destination directory (resolved).
 
     Returns:
-        list[Path]: Paths of regular files extracted (in archive order).
+        tuple[list[Path], int]: Paths of regular files extracted (in archive
+        order) and how many junk files were skipped.
 
     Raises:
         StorageError: If a member would escape the destination (Zip Slip) or
@@ -676,6 +680,7 @@ def _safe_zip_extract(archive: Path, dest: Path) -> list[Path]:
     """
     resolved_dest = dest.resolve()
     extracted: list[Path] = []
+    skipped = 0
     try:
         with zipfile.ZipFile(archive) as zf:
             for info in zf.infolist():
@@ -687,56 +692,75 @@ def _safe_zip_extract(archive: Path, dest: Path) -> list[Path]:
                     )
                 if info.is_dir():
                     continue
+                if _is_junk_name(info.filename):
+                    skipped += 1
+                    continue
                 zf.extract(info, resolved_dest)
                 extracted.append(resolved_dest / info.filename)
     except zipfile.BadZipFile as exc:
         raise StorageError(f"Invalid ZIP archive: {archive}") from exc
-    return extracted
+    return extracted, skipped
 
 
-def _safe_tar_extract(archive: Path, dest: Path) -> list[Path]:
+def _safe_tar_extract(archive: Path, dest: Path) -> tuple[list[Path], int]:
     """Extract a TAR (optionally compressed) archive to ``dest``.
 
     Uses the stdlib ``filter='data'`` (always available for this package,
     which requires Python >= 3.12) to block path traversal, absolute paths,
-    devices, links and setuid bits.
+    devices, links and setuid bits. Junk members (:func:`_is_junk_name`) are
+    never written to ``dest``.
 
     Args:
         archive: Path to the ``.tar*`` archive.
         dest: Destination directory (resolved).
 
     Returns:
-        list[Path]: Paths of regular files extracted (in archive order).
+        tuple[list[Path], int]: Paths of regular files extracted (in archive
+        order) and how many junk files were skipped.
 
     Raises:
         StorageError: If the archive is not a valid TAR.
     """
     resolved_dest = dest.resolve()
     extracted: list[Path] = []
+    skipped = 0
     try:
         with tarfile.open(archive, "r:*") as tf:
-            tf.extractall(resolved_dest, filter="data")
-            for member in tf.getmembers():
-                if member.isfile():
+            members = tf.getmembers()
+            wanted = [m for m in members if not _is_junk_name(m.name)]
+            tf.extractall(resolved_dest, members=wanted, filter="data")
+            for member in members:
+                if not member.isfile():
+                    continue
+                if _is_junk_name(member.name):
+                    skipped += 1
+                else:
                     extracted.append(resolved_dest / member.name)
     except tarfile.TarError as exc:
         raise StorageError(f"Invalid TAR archive: {archive}") from exc
-    return extracted
+    return extracted, skipped
 
 
-def _seven_zip_extract(archive: Path, dest: Path) -> list[Path]:
+def _seven_zip_extract(archive: Path, dest: Path) -> tuple[list[Path], int]:
     """Extract an archive via the external ``7z`` binary (fallback path).
+
+    ``7z e`` flattens the tree, so junk is recognised by file name. Junk files
+    that this extraction created are removed afterwards; junk that was already
+    in ``dest`` before is left alone (it belongs to the caller) but is not
+    returned.
 
     Args:
         archive: Path to the archive (``.7z``, ``.rar``, etc.).
         dest: Destination directory.
 
     Returns:
-        list[Path]: Paths of regular files extracted.
+        tuple[list[Path], int]: Paths of regular files extracted and how many
+        junk files were skipped.
 
     Raises:
         StorageError: If the ``7z`` binary is missing or exits non-zero.
     """
+    before = {p.name for p in dest.iterdir() if p.is_file()}
     result = subprocess.run(
         ["7z", "e", str(archive), f"-o{dest}", "-y"],
         check=False,
@@ -747,7 +771,18 @@ def _seven_zip_extract(archive: Path, dest: Path) -> list[Path]:
         raise StorageError(
             f"7z failed to decompress {archive}: {stderr or 'unknown error'}"
         )
-    return [p for p in dest.iterdir() if p.is_file()]
+    kept: list[Path] = []
+    skipped = 0
+    for p in dest.iterdir():
+        if not p.is_file():
+            continue
+        if _is_junk_name(p.name):
+            skipped += 1
+            if p.name not in before:
+                p.unlink(missing_ok=True)
+        else:
+            kept.append(p)
+    return kept, skipped
 
 
 def _unsupported_suffix(path: Path) -> StorageError:
@@ -802,12 +837,12 @@ def _extract_into(
     """
     suffix = archive.suffix.lower()
     if suffix == _ZIP_SUFFIX:
-        extracted = _safe_zip_extract(archive, dest)
+        extracted, skipped = _safe_zip_extract(archive, dest)
     elif archive.name.lower().endswith(_TAR_SUFFIXES) or suffix == ".tar":
-        extracted = _safe_tar_extract(archive, dest)
+        extracted, skipped = _safe_tar_extract(archive, dest)
     elif _needs_seven_zip(archive, suffix):
         try:
-            extracted = _seven_zip_extract(archive, dest)
+            extracted, skipped = _seven_zip_extract(archive, dest)
         except FileNotFoundError as exc:
             raise StorageError(
                 f"Cannot decompress {archive}: the external '7z' binary is "
@@ -817,8 +852,10 @@ def _extract_into(
     else:
         raise _unsupported_suffix(archive)
 
-    if not extracted:
+    if not extracted and not skipped:
         raise StorageError(f"Archive produced no files: {archive}")
+    # Only junk inside: nothing was written; the picker returns ``dest`` (or
+    # raises when ``target_extensions`` asks for something).
     return _pick_result(extracted, dest, target_extensions)
 
 
@@ -853,14 +890,20 @@ def decompress_archive(
     ZIP members are checked against the destination to prevent Zip Slip path
     traversal; TAR uses ``filter='data'`` on Python >= 3.12.
 
+    Junk members are never written to the destination: Office lock files
+    (``~$*``), ``md5_*`` checksums, ``Thumbs.db``, ``.DS_Store`` and
+    ``__MACOSX/`` entries (names compared case-insensitively). An archive with
+    only junk extracts nothing and returns the destination directory. For
+    ``.7z``/``.rar`` the external tool writes everything, so the junk files
+    that extraction created are removed afterwards (junk already in
+    ``output_dir`` is left alone).
+
     Resolution rules when ``target_extensions`` is not given:
 
     - A single extracted file is returned directly.
     - Multiple extracted files: the first matching a common data extension
       (``.csv``, ``.xls``, ``.xlsx``, ``.json``, ...) if any, otherwise the
-      destination directory itself. Office lock files (``~$*``), ``md5_*``
-      checksums, ``Thumbs.db``, ``.DS_Store`` and ``__MACOSX/`` entries are
-      never chosen.
+      destination directory itself.
 
     Args:
         archive_path: Path to the archive to decompress.
@@ -951,19 +994,34 @@ def extracted_archive(
         _rmtree_robust(root)
 
 
-def _is_junk_member(path: Path) -> bool:
-    """Whether an extracted file is archive/OS noise rather than data.
-
-    Covers Office lock files (``~$*``), checksum files (``md5_*``),
-    ``Thumbs.db``, ``.DS_Store`` and anything under ``__MACOSX/``.
-    """
-    name = path.name.lower()
+def _is_junk_parts(parts: Iterable[str]) -> bool:
+    """Whether a member path (as its components) is archive/OS noise."""
+    parts = list(parts)
+    if not parts:
+        return False
+    name = parts[-1].lower()
     return (
         name.startswith("~$")
         or name.startswith("md5_")
         or name in {"thumbs.db", ".ds_store"}
-        or "__macosx" in (part.lower() for part in path.parts)
+        or any(part.lower() == "__macosx" for part in parts)
     )
+
+
+def _is_junk_name(name: str) -> bool:
+    """Whether an archive member name (``/`` or ``\\`` separated) is noise."""
+    return _is_junk_parts(p for p in name.replace("\\", "/").split("/") if p)
+
+
+def _is_junk_member(path: Path) -> bool:
+    """Whether an extracted file is archive/OS noise rather than data.
+
+    Covers Office lock files (``~$*``), checksum files (``md5_*``),
+    ``Thumbs.db``, ``.DS_Store`` and anything under ``__MACOSX/``. Archive
+    extraction never writes these (see :func:`decompress_archive`); the check
+    stays in the result picker as a second line for files already on disk.
+    """
+    return _is_junk_parts(path.parts)
 
 
 def _pick_result(

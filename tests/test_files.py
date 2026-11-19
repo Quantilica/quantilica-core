@@ -566,3 +566,130 @@ def test_extracted_archive_real_7z_removes_root(tmp_path, tmpdir_isolado):
         assert path.name == "dados.csv"
         assert path.read_bytes() == b"x\n1\n"
     assert _sobras(tmpdir_isolado) == []
+
+
+# ---------------------------------------------------------------------------
+# lixo não chega ao destino
+# ---------------------------------------------------------------------------
+
+_LIXO = {
+    "~$dados.xlsx": b"lock",
+    "pasta/~$outro.xlsx": b"lock",
+    "md5_dados.txt": b"abc  dados.csv",
+    "MD5_outro.csv": b"abc",
+    "Thumbs.db": b"x",
+    ".DS_Store": b"x",
+    "__MACOSX/dados.csv": b"lixo",
+}
+
+
+def _arquivos(raiz: Path) -> set[str]:
+    return {p.relative_to(raiz).as_posix() for p in raiz.rglob("*") if p.is_file()}
+
+
+def test_decompress_archive_zip_nao_grava_lixo(tmp_path):
+    archive = _make_zip(tmp_path, {**_LIXO, "dados.csv": b"a,b\n1,2\n"})
+    out = tmp_path / "out"
+    assert decompress_archive(archive, out) == out / "dados.csv"
+    assert _arquivos(out) == {"dados.csv"}
+
+
+def test_decompress_archive_zip_lixo_com_barra_invertida(tmp_path):
+    archive = _make_zip(tmp_path, {"sub\\~$a.xlsx": b"lock", "sub/real.csv": b"a\n1\n"})
+    out = tmp_path / "out"
+    decompress_archive(archive, out)
+    assert not any("~$" in name for name in _arquivos(out))
+
+
+def test_decompress_archive_zip_so_lixo_devolve_destino_vazio(tmp_path):
+    archive = _make_zip(tmp_path, {"Thumbs.db": b"x", "md5_a.txt": b"x"})
+    out = tmp_path / "out"
+    assert decompress_archive(archive, out) == out
+    assert _arquivos(out) == set()
+
+
+def test_decompress_archive_zip_so_lixo_com_target_extensions_levanta(tmp_path):
+    archive = _make_zip(tmp_path, {"~$a.xlsx": b"lock"})
+    with pytest.raises(StorageError, match="No extracted file matches"):
+        decompress_archive(archive, tmp_path / "out", (".xlsx",))
+
+
+def test_decompress_archive_zip_vazio_continua_sem_arquivos(tmp_path):
+    archive = _make_zip(tmp_path, {})
+    with pytest.raises(StorageError, match="no files"):
+        decompress_archive(archive, tmp_path / "out")
+
+
+def test_decompress_archive_zip_lixo_ainda_checa_path_traversal(tmp_path):
+    archive = _make_zip(tmp_path, {"../~$fuga.xlsx": b"x"})
+    with pytest.raises(StorageError, match="path traversal"):
+        decompress_archive(archive, tmp_path / "out")
+
+
+def test_decompress_archive_nome_parecido_nao_e_lixo(tmp_path):
+    """So o prefixo exato conta: ``md5.csv`` e ``meu~$.csv`` sao dados."""
+    archive = _make_zip(tmp_path, {"md5.csv": b"a\n1\n", "meu~$.csv": b"a\n1\n"})
+    out = tmp_path / "out"
+    decompress_archive(archive, out)
+    assert _arquivos(out) == {"md5.csv", "meu~$.csv"}
+
+
+@pytest.mark.parametrize("mode,ext", [("w", ".tar"), ("w:gz", ".tar.gz")])
+def test_decompress_archive_tar_nao_grava_lixo(tmp_path, mode, ext):
+    import io
+    import tarfile
+
+    archive = tmp_path / f"dados{ext}"
+    with tarfile.open(archive, mode) as tf:
+        for name, content in {**_LIXO, "dados.csv": b"a,b\n1,2\n"}.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            tf.addfile(info, io.BytesIO(content))
+    out = tmp_path / "out"
+    assert decompress_archive(archive, out) == out / "dados.csv"
+    assert _arquivos(out) == {"dados.csv"}
+
+
+def test_decompress_archive_7z_remove_lixo_criado_e_preserva_o_que_ja_existia(
+    tmp_path, monkeypatch
+):
+    import quantilica.core.files as files_mod
+
+    archive = tmp_path / "data.7z"
+    archive.write_bytes(b"7z fake bytes")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    (out_dir / "md5_antigo.txt").write_bytes(b"do chamador")
+
+    def fake_run(cmd, **kwargs):
+        for name in ("dados.csv", "~$dados.xlsx", "md5_dados.txt", "Thumbs.db"):
+            (out_dir / name).write_bytes(b"x")
+        return type("R", (), {"returncode": 0, "stderr": b""})()
+
+    monkeypatch.setattr(files_mod.subprocess, "run", fake_run)
+    assert decompress_archive(archive, output_dir=out_dir) == out_dir / "dados.csv"
+    assert _arquivos(out_dir) == {"dados.csv", "md5_antigo.txt"}
+
+
+def test_extracted_archive_zip_nao_grava_lixo(tmp_path):
+    archive = _make_zip(tmp_path, {**_LIXO, "a.csv": b"1\n", "b.csv": b"2\n"})
+    with extracted_archive(archive) as picked:
+        assert picked.name == "a.csv"
+        assert _arquivos(picked.parent) == {"a.csv", "b.csv"}
+
+
+@pytest.mark.skipif(shutil.which("7z") is None, reason="binário 7z ausente no PATH")
+def test_decompress_archive_real_7z_nao_deixa_lixo(tmp_path):
+    fonte = tmp_path / "fonte"
+    fonte.mkdir()
+    for name in ("dados.csv", "~$dados.xlsx", "md5_dados.txt", "Thumbs.db"):
+        (fonte / name).write_bytes(b"x\n1\n")
+    archive = tmp_path / "dados.7z"
+    subprocess.run(
+        ["7z", "a", str(archive), *(str(p) for p in sorted(fonte.iterdir()))],
+        check=True,
+        capture_output=True,
+    )
+    out = tmp_path / "out"
+    assert decompress_archive(archive, out) == out / "dados.csv"
+    assert _arquivos(out) == {"dados.csv"}
