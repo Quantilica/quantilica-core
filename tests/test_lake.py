@@ -36,10 +36,18 @@ def test_lake_root_falls_back_to_data_dir(monkeypatch, tmp_path):
     assert lake_root() == tmp_path / "data" / "lake"
 
 
-def test_lake_root_default_is_home_data_lake(monkeypatch):
+def test_lake_root_default_is_xdg_data_home(monkeypatch, tmp_path):
     monkeypatch.delenv("QUANTILICA_LAKE_DIR", raising=False)
     monkeypatch.delenv("QUANTILICA_DATA_DIR", raising=False)
-    assert lake_root() == Path.home() / "data" / "lake"
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    assert lake_root() == tmp_path / "xdg" / "quantilica" / "lake"
+
+
+def test_lake_root_default_without_xdg_is_local_share(monkeypatch):
+    monkeypatch.delenv("QUANTILICA_LAKE_DIR", raising=False)
+    monkeypatch.delenv("QUANTILICA_DATA_DIR", raising=False)
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    assert lake_root() == Path.home() / ".local" / "share" / "quantilica" / "lake"
 
 
 def test_lake_root_treats_empty_variables_as_unset(monkeypatch, tmp_path):
@@ -47,7 +55,8 @@ def test_lake_root_treats_empty_variables_as_unset(monkeypatch, tmp_path):
     monkeypatch.setenv("QUANTILICA_DATA_DIR", str(tmp_path))
     assert lake_root() == tmp_path / "lake"
     monkeypatch.setenv("QUANTILICA_DATA_DIR", "")
-    assert lake_root() == Path.home() / "data" / "lake"
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    assert lake_root() == tmp_path / "xdg" / "quantilica" / "lake"
 
 
 def test_lake_root_expands_user(monkeypatch):

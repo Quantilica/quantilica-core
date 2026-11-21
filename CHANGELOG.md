@@ -5,6 +5,12 @@ Todas as mudanças notáveis deste projeto serão documentadas neste arquivo.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [Não lançado]
+
+### Alterado
+
+- `lake_root()` deixa de usar `~/data/lake` como padrão e passa a usar `<default_data_dir()>/lake`. Novo `default_data_dir()`: `$XDG_DATA_HOME/quantilica` ou, sem ela, `~/.local/share/quantilica`. `QUANTILICA_LAKE_DIR` e `QUANTILICA_DATA_DIR` continuam tendo precedência; quem já as define não muda de caminho.
+
 ## [0.27.1] - 2026-11-19
 
 ### Corrigido

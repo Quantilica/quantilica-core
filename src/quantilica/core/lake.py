@@ -122,11 +122,22 @@ LinkMode = Literal["hardlink", "symlink", "copy"]
 _LINK_MODES: tuple[LinkMode, ...] = ("hardlink", "symlink", "copy")
 
 
+def default_data_dir() -> Path:
+    """Diretório de dados padrão do usuário, seguindo o XDG.
+
+    ``$XDG_DATA_HOME/quantilica`` ou, sem ela, ``~/.local/share/quantilica``.
+    Só vale quando nenhuma variável de diretório está definida.
+    """
+    xdg = os.environ.get("XDG_DATA_HOME")
+    base = Path(xdg).expanduser() if xdg else Path.home() / ".local" / "share"
+    return base / "quantilica"
+
+
 def lake_root() -> Path:
     """Resolve the lake root directory.
 
     ``QUANTILICA_LAKE_DIR`` wins; otherwise ``$QUANTILICA_DATA_DIR/lake``;
-    otherwise ``~/data/lake``. Empty variables count as unset.
+    otherwise ``<default_data_dir()>/lake``. Empty variables count as unset.
     """
     explicit = os.environ.get(LAKE_DIR_ENV)
     if explicit:
@@ -134,7 +145,7 @@ def lake_root() -> Path:
     data_dir = os.environ.get(DATA_DIR_ENV)
     if data_dir:
         return Path(data_dir).expanduser() / "lake"
-    return Path.home() / "data" / "lake"
+    return default_data_dir() / "lake"
 
 
 def file_key(path_or_name: str | PurePath) -> str:
