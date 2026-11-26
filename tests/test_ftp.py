@@ -160,14 +160,62 @@ def test_parse_ftp_list_line_iis_name_with_spaces():
 
 def test_parse_ftp_list_line_unix_regular_file_recent_time():
     line = "-rw-r--r-- 1 ftp ftp 123456789 Apr 21 09:00 arquivo.csv"
-    result = parse_ftp_list_line(line)
+    result = parse_ftp_list_line(line, now=dt.datetime(2026, 11, 26, 12, 0))
     assert result is not None
     name, size, modified = result
     assert name == "arquivo.csv"
     assert size == 123456789
-    now = dt.datetime.now()
-    assert (modified.year, modified.month, modified.day) == (now.year, 4, 21)
-    assert (modified.hour, modified.minute) == (9, 0)
+    assert modified == dt.datetime(2026, 4, 21, 9, 0)
+
+
+def test_parse_ftp_list_line_unix_time_slot_before_now_keeps_year():
+    line = "-rw-r--r-- 1 ftp ftp 10 Apr 21 09:00 a.csv"
+    # um minuto depois do instante listado: ainda é do mesmo ano
+    result = parse_ftp_list_line(line, now=dt.datetime(2026, 4, 21, 9, 1))
+    assert result is not None
+    assert result[2] == dt.datetime(2026, 4, 21, 9, 0)
+
+
+def test_parse_ftp_list_line_unix_time_slot_after_now_goes_back_one_year():
+    line = "-rw-r--r-- 1 ftp ftp 10 Apr 21 09:00 a.csv"
+    # um minuto antes do instante listado: no futuro, logo do ano passado
+    result = parse_ftp_list_line(line, now=dt.datetime(2026, 4, 21, 8, 59))
+    assert result is not None
+    assert result[2] == dt.datetime(2025, 4, 21, 9, 0)
+
+
+@pytest.mark.parametrize(
+    ("now", "expected_year"),
+    [
+        (dt.datetime(2027, 1, 1, 0, 0), 2026),  # janeiro: "Apr 21" é do ano anterior
+        (dt.datetime(2027, 4, 20, 23, 59), 2026),  # véspera do dia listado
+        (dt.datetime(2027, 4, 21, 9, 0), 2027),  # no instante exato
+        (dt.datetime(2027, 12, 31, 23, 59), 2027),
+    ],
+)
+def test_parse_ftp_list_line_unix_year_turn_with_fixed_clock(now, expected_year):
+    line = "-rw-r--r-- 1 ftp ftp 10 Apr 21 09:00 a.csv"
+    result = parse_ftp_list_line(line, now=now)
+    assert result is not None
+    assert result[2] == dt.datetime(expected_year, 4, 21, 9, 0)
+
+
+def test_parse_ftp_list_line_unix_leap_day_in_non_leap_year_goes_back():
+    line = "-rw-r--r-- 1 ftp ftp 10 Feb 29 10:00 bissexto.csv"
+    # 2027 não é bissexto: o 29/02 listado só pode ser de 2024
+    result = parse_ftp_list_line(line, now=dt.datetime(2027, 3, 1, 12, 0))
+    assert result is not None
+    assert result[2] == dt.datetime(2024, 2, 29, 10, 0)
+
+
+def test_parse_ftp_list_line_unix_time_slot_without_now_uses_local_clock():
+    line = "-rw-r--r-- 1 ftp ftp 10 Jan  1 00:00 a.csv"
+    before = dt.datetime.now()
+    result = parse_ftp_list_line(line)
+    after = dt.datetime.now()
+    assert result is not None
+    assert result[2] <= after
+    assert result[2].year in {before.year, before.year - 1, after.year}
 
 
 def test_parse_ftp_list_line_unix_file_with_explicit_year():
@@ -198,21 +246,22 @@ def test_parse_ftp_list_line_empty_and_garbage_return_none():
 
 
 def test_parse_ftp_list_line_unix_recent_file_not_in_future():
-    """Arquivo com hora futura de hoje deve recuar o ano (ls heurística)."""
-    now = dt.datetime.now()
-    if now.hour > 20 or now.month == 12 and now.day == 31:  # noqa: PLR0916
-        pytest.skip("roda perto da meia-noite: heurística ambígua")
-    future_hour = now.hour + 3
-    line = (
-        f"-rw-r--r-- 1 ftp ftp 10 "
-        f"{now.strftime('%b')} {max(now.day, 1)} {future_hour:02d}:{now.minute:02d} "
-        f"recent.csv"
-    )
-    result = parse_ftp_list_line(line)
+    """Arquivo com hora futura de hoje deve recuar o ano (heurística do ls)."""
+    now = dt.datetime(2026, 11, 26, 10, 30)
+    line = "-rw-r--r-- 1 ftp ftp 10 Nov 26 13:30 recent.csv"
+    result = parse_ftp_list_line(line, now=now)
     assert result is not None
     _, _, modified = result
-    assert modified.year == now.year - 1
-    assert (modified.hour, modified.minute) == (future_hour, now.minute)
+    assert modified == dt.datetime(2025, 11, 26, 13, 30)
+
+
+def test_parse_ftp_list_line_unix_recent_file_new_year_eve_not_ambiguous():
+    """Com o relógio fixo, a virada do ano deixa de ser ambígua."""
+    now = dt.datetime(2026, 12, 31, 23, 59)
+    line = "-rw-r--r-- 1 ftp ftp 10 Dec 31 23:30 recent.csv"
+    result = parse_ftp_list_line(line, now=now)
+    assert result is not None
+    assert result[2] == dt.datetime(2026, 12, 31, 23, 30)
 
 
 def test_parse_ftp_list_line_exported_from_package_root():

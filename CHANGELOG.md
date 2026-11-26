@@ -7,6 +7,15 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ## [Não lançado]
 
+### Adicionado
+
+- `parse_ftp_list_line(line, *, now=None)`: relógio injetável para resolver o ano das linhas `ls -l` que trazem hora em vez de ano. Sem `now` o comportamento é o de antes (relógio local).
+
+### Corrigido
+
+- `parse_ftp_list_line`: o instante resolvido de uma linha `ls -l` com hora deixa de herdar os segundos e microssegundos do relógio (agora é `HH:MM:00`), e `Feb 29` num ano não bissexto deixa de levantar `ValueError` (recua para o ano bissexto mais recente em que a data existe).
+- `tests/test_ftp.py`: os testes de "hora recente" não dependem mais do relógio real. Antes `test_parse_ftp_list_line_unix_regular_file_recent_time` falhava de 01/01 a 21/04 de cada ano; agora os dois lados da virada usam relógio fixo.
+
 ### Alterado
 
 - `lake_root()` deixa de usar `~/data/lake` como padrão e passa a usar `<default_data_dir()>/lake`. Novo `default_data_dir()`: `$XDG_DATA_HOME/quantilica` ou, sem ela, `~/.local/share/quantilica`. `QUANTILICA_LAKE_DIR` e `QUANTILICA_DATA_DIR` continuam tendo precedência; quem já as define não muda de caminho.

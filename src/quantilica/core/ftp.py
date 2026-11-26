@@ -72,7 +72,33 @@ _MONTHS = {
 }
 
 
-def parse_ftp_list_line(line: str) -> tuple[str, int, dt.datetime] | None:
+def _recent_ls_datetime(
+    month: int, day: int, hour: int, minute: int, now: dt.datetime
+) -> dt.datetime:
+    """Resolve o ano de um ``ls -l`` que traz hora em vez de ano.
+
+    O ``ls`` só mostra a hora para arquivos de até ~6 meses: o instante
+    pertence ao ano de ``now`` e, se cair no futuro, ao ano anterior. Datas
+    que não existem num ano (29/02 fora de ano bissexto) recuam até o ano em
+    que existem.
+    """
+    year = now.year
+    for _ in range(9):  # 29/02 existe pelo menos a cada 8 anos
+        try:
+            candidate = dt.datetime(year, month, day, hour, minute)
+        except ValueError:
+            year -= 1
+            continue
+        if candidate > now:
+            year -= 1
+            continue
+        return candidate
+    raise ValueError(f"data inválida na listagem: {month:02d}-{day:02d}")
+
+
+def parse_ftp_list_line(
+    line: str, *, now: dt.datetime | None = None
+) -> tuple[str, int, dt.datetime] | None:
     """Parse one raw FTP ``LIST`` line into (filename, size, modified).
 
     Handles both legacy IIS/Windows DOS-style listings (``MM-DD-YY  HH:MMAM
@@ -81,6 +107,9 @@ def parse_ftp_list_line(line: str) -> tuple[str, int, dt.datetime] | None:
 
     Args:
         line: Raw line as returned by ``ftplib`` LIST/retrlines.
+        now: Clock used to resolve the year of UNIX lines that carry a
+            time-of-day instead of a year. Defaults to the current local
+            time; pass a fixed value to make the result deterministic.
 
     Returns:
         tuple[str, int, dt.datetime] | None: ``(filename, size_bytes,
@@ -112,13 +141,12 @@ def parse_ftp_list_line(line: str) -> tuple[str, int, dt.datetime] | None:
         year_slot = match["year_or_time"]
         if ":" in year_slot:
             hour, minute = (int(value) for value in year_slot.split(":", 1))
-            now = dt.datetime.now()
-            raw_dt = now.replace(month=month, day=day, hour=hour, minute=minute)
             # ls shows the year only for files older than ~6 months; recent
             # files carry a time-of-day instead. A time-of-day that lands in
             # the future therefore belongs to last year.
-            if raw_dt > now:
-                raw_dt = raw_dt.replace(year=now.year - 1)
+            raw_dt = _recent_ls_datetime(
+                month, day, hour, minute, now if now is not None else dt.datetime.now()
+            )
         else:
             raw_dt = dt.datetime(int(year_slot), month, day)
         name = match["name"].strip()
