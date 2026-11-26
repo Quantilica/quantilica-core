@@ -18,6 +18,7 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ### Alterado
 
+- README: instalação só por `uv add`, tabela de módulos conferida contra o pacote (a linha `metadata` descrevia um módulo que não existe; entram `ftp`, `ratelimit`, `ckan`, `odata`, `files`, `sync`, `regeneration`, `lake`, `registry`, `dates`, `config` e `cache`) e o exemplo de uso grava o sidecar com `write_manifest_sidecar` (o `stat.path.with_suffix(...)` falhava: `ObjectStat.path` é `str`).
 - `lake_root()` deixa de usar `~/data/lake` como padrão e passa a usar `<default_data_dir()>/lake`. Novo `default_data_dir()`: `$XDG_DATA_HOME/quantilica` ou, sem ela, `~/.local/share/quantilica`. `QUANTILICA_LAKE_DIR` e `QUANTILICA_DATA_DIR` continuam tendo precedência; quem já as define não muda de caminho.
 
 ## [0.27.1] - 2026-11-19

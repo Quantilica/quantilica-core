@@ -5,13 +5,10 @@
 Biblioteca de utilitários domain-neutral que serve como base para todos os coletores e pipelines Quantilica. Centraliza rede resiliente, armazenamento atômico, proveniência de dados e logging estruturado — permitindo que cada pacote de domínio foque exclusivamente na lógica de sua fonte de dados.
 
 Para a documentação completa, consulte [https://docs.quantilica.com](https://docs.quantilica.com).
+
 ## Instalação
 
-```bash
-pip install quantilica-core
-```
-
-Com uv:
+O `quantilica-core` é publicado no PyPI:
 
 ```bash
 uv add quantilica-core
@@ -22,7 +19,7 @@ uv add quantilica-core
 ```python
 from quantilica.core.http import HttpClient
 from quantilica.core.storage import LocalStorage
-from quantilica.core.manifests import DownloadManifest
+from quantilica.core.manifests import DownloadManifest, write_manifest_sidecar
 
 # Cliente HTTP com retry automático
 client = HttpClient(attempts=3)
@@ -40,20 +37,28 @@ manifest = DownloadManifest.from_file(
     file_path=stat.path,
     producer="ibge-sidra-fetcher",
 )
-manifest.write_json(stat.path.with_suffix(".manifest.json"))
+write_manifest_sidecar(stat.path, manifest)  # grava <arquivo>.manifest.json ao lado
 ```
 
 ## Módulos
 
 | Módulo | Descrição |
 | :--- | :--- |
-| `http` | `HttpClient` e `AsyncHttpClient` com backoff exponencial e jitter |
-| `retry` | Lógica de retry configurável para falhas de rede e erros transientes |
-| `storage` | `LocalStorage` para gerenciar artefatos brutos e processados atomicamente |
-| `manifests` | `DownloadManifest` e `ExecutionManifest` para rastreabilidade completa |
-| `metadata` | Modelos `MetadataCatalog`, `Source`, `Dataset` para interoperabilidade |
+| `http` | `HttpClient` e `AsyncHttpClient` com backoff exponencial, jitter, retomada de download e política por host (`HostPolicy`) |
+| `ratelimit` | `TokenBucket`, `CircuitBreaker` (`CircuitOpenError`) e `HostGuard` para respeitar as fontes (o `RateLimiter` simples fica em `http`) |
+| `retry` | `retry_call`, `with_retry` e `exponential_delay` para falhas de rede e erros transientes |
+| `ftp` | `FtpClient`, `MonitoredFTP` e `parse_ftp_list_line` (listagens UNIX e IIS) |
+| `ckan`, `odata` | Clientes de portais CKAN e paginação OData |
+| `storage` | `LocalStorage` (escrita atômica por chave) e `BaseDataRepository` e `StampedDataRepository` (layout `{dataset_id}/` e nomes com carimbo `@AAAAMMDD`) |
+| `files` | Escrita atômica, `sha256`, `decompress_archive` e `extracted_archive` |
+| `manifests` | `DownloadManifest`, `ExecutionManifest`, `DatasetManifest`, `RunManifest` e o sidecar `<arquivo>.manifest.json` |
+| `sync` | Sincronização incremental: `FreshnessPolicy`, sondas HTTP/FTP e `should_skip` |
+| `regeneration` | Detecção de arquivo regenerado pela fonte sem mudança de conteúdo |
+| `lake` | Contrato do Data Lake em Parquet: `DatasetDescriptor`, `LakeConverter`, `materialize_view` |
+| `registry` | Registro público de fetchers (`FetcherInfo`) |
+| `dates`, `config`, `cache` | `utc_now`/`isoformat_utc`, `EnvSettings`/`load_dotenv` e `FileCache` |
 | `logging` | Logging estruturado via `get_logger` e `log_step` |
-| `exceptions` | Hierarquia padrão: `FetchError`, `ParseError`, `StorageError` |
+| `exceptions` | Hierarquia padrão: `QuantilicaError`, `FetchError`, `ParseError`, `StorageError` |
 
 ## Princípios de Design
 
