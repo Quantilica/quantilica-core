@@ -34,6 +34,8 @@ class FakeFTP:
         self._retr_error = retr_error
         self.quit_called = False
         self.close_called = False
+        self.opens = 0
+        self.log: list[str] = []
 
     def size(self, url: str):
         if isinstance(self._size, Exception):
@@ -62,7 +64,12 @@ class FakeFTP:
 
 def _client(fake: FakeFTP, **kwargs) -> FtpClient:
     client = FtpClient("ftp.example.com", attempts=1, **kwargs)
-    client._open = lambda: fake  # type: ignore[method-assign]
+
+    def _open():
+        fake.opens += 1
+        return fake
+
+    client._open = _open  # type: ignore[method-assign]
     return client
 
 
@@ -126,7 +133,11 @@ def test_body_exception_propagates_not_masked(tmp_path: Path):
 
 
 class ProbeFTP(FakeFTP):
-    """FakeFTP cujo SIZE/MDTM são configuráveis e que conta os RETR."""
+    """FakeFTP cujo SIZE/MDTM são configuráveis; conta RETR e registra a ordem.
+
+    Como servidores reais em modo ASCII, ``SIZE`` recusa (550) se o ``TYPE I``
+    não foi enviado antes.
+    """
 
     def __init__(
         self,
@@ -138,18 +149,34 @@ class ProbeFTP(FakeFTP):
         super().__init__(chunks=chunks, size=size)  # type: ignore[arg-type]
         self._mdtm = mdtm
         self.retr_calls = 0
+        self.binary = False
+
+    def voidcmd(self, cmd: str) -> str:
+        self.log.append(cmd)
+        if cmd == "TYPE I":
+            self.binary = True
+        return "200 ok"
+
+    def size(self, url: str):
+        self.log.append("SIZE")
+        if not self.binary:
+            raise ftplib.error_perm("550 SIZE not allowed in ASCII mode")
+        return super().size(url)
 
     def retrbinary(self, cmd: str, cb, blocksize: int = 8192, rest=None) -> str:
+        self.log.append("RETR")
+        self.binary = True
         self.retr_calls += 1
         return super().retrbinary(cmd, cb, blocksize, rest)
 
     def sendcmd(self, cmd: str) -> str:
+        self.log.append(cmd.split()[0])
         if isinstance(self._mdtm, Exception):
             raise self._mdtm
         return self._mdtm
 
 
-def _fetch(client: FtpClient, target: Path, *, force: bool = False) -> Path:
+def _fetch(client: FtpClient, target: Path, *, force: bool = False, **kwargs) -> Path:
     return client.download_with_manifest(
         "pub/x.dbc",
         target,
@@ -157,6 +184,7 @@ def _fetch(client: FtpClient, target: Path, *, force: bool = False) -> Path:
         dataset_id="sih-rd",
         producer="test",
         force=force,
+        **kwargs,
     )
 
 
@@ -185,11 +213,13 @@ def test_sidecar_only_same_size_and_date_skips(tmp_path: Path):
     assert not target.exists()  # sidecar-only: o arquivo não é recriado
 
 
-def test_sidecar_only_older_remote_date_skips(tmp_path: Path):
+def test_sidecar_only_recorded_mdtm_must_be_equal_older_downloads(tmp_path: Path):
+    """MDTM gravado pelo FTP: data diferente baixa, inclusive a mais velha
+    (cópia que preserva o mtime antigo com conteúdo novo)."""
     target = _sidecar_only(tmp_path)
     fake = ProbeFTP(size=10, mdtm="213 20231231000000")
     _fetch(_client(fake), target)
-    assert fake.retr_calls == 0
+    assert fake.retr_calls == 1
 
 
 def test_sidecar_only_different_size_downloads(tmp_path: Path):
@@ -261,22 +291,37 @@ def test_sidecar_only_malformed_mdtm_downloads(tmp_path: Path):
     assert fake.retr_calls == 1
 
 
-def test_sidecar_only_legacy_manifest_uses_fetched_at(tmp_path: Path):
-    """Manifestos antigos (sem source_meta) comparam a data com ``fetched_at``."""
+def _legacy_sidecar(tmp_path: Path) -> Path:
+    """Manifesto antigo: sem ``source_meta``, só ``fetched_at``."""
     target = _sidecar_only(tmp_path)
     sidecar = Path(str(target) + ".manifest.json")
     data = json.loads(sidecar.read_text(encoding="utf-8"))
     data.pop("source_meta", None)
     data["fetched_at"] = "2026-11-01T00:00:00+00:00"
     sidecar.write_text(json.dumps(data), encoding="utf-8")
+    return target
 
-    fake = ProbeFTP(size=10, mdtm="213 20260101000000")  # antes do fetched_at
-    _fetch(_client(fake), target)
-    assert fake.retr_calls == 0
 
-    fake = ProbeFTP(size=10, mdtm="213 20261201000000")  # depois do fetched_at
+@pytest.mark.parametrize(
+    ("mdtm", "downloads"),
+    [
+        ("213 20260101000000", False),  # bem antes do fetched_at
+        ("213 20261030230000", False),  # 25 h antes: fora da margem
+        ("213 20261031120000", True),  # 12 h antes: dentro da margem de 1 dia
+        ("213 20261031000000", False),  # exatamente 1 dia antes: pula
+        ("213 20261101000000", True),  # igual ao fetched_at
+        ("213 20261201000000", True),  # depois
+    ],
+)
+def test_sidecar_only_legacy_manifest_uses_fetched_at_with_margin(
+    tmp_path: Path, mdtm: str, downloads: bool
+):
+    """Sem MDTM gravado: ``MDTM <= fetched_at - 1 dia``; a margem protege
+    servidor cujo MDTM vem em hora local."""
+    target = _legacy_sidecar(tmp_path)
+    fake = ProbeFTP(size=10, mdtm=mdtm)
     _fetch(_client(fake), target)
-    assert fake.retr_calls == 1
+    assert fake.retr_calls == (1 if downloads else 0)
 
 
 def test_sidecar_only_mdtm_with_fraction_is_parsed(tmp_path: Path):
@@ -284,6 +329,96 @@ def test_sidecar_only_mdtm_with_fraction_is_parsed(tmp_path: Path):
     fake = ProbeFTP(size=10, mdtm="213 20240101120000.250")
     _fetch(_client(fake), target)
     assert fake.retr_calls == 0
+
+
+def test_probe_is_one_connection_with_type_i_before_size(tmp_path: Path):
+    target = _sidecar_only(tmp_path)
+    fake = ProbeFTP(size=10)
+    _fetch(_client(fake), target)
+    assert fake.opens == 1
+    assert fake.log == ["TYPE I", "SIZE", "MDTM"]
+    assert fake.retr_calls == 0
+
+
+def test_download_reads_mdtm_before_retr(tmp_path: Path):
+    """MDTM antes do RETR: nunca a data nova gravada com conteúdo velho."""
+    fake = ProbeFTP()
+    _fetch(_client(fake), tmp_path / "x.dbc")
+    assert fake.log.index("MDTM") < fake.log.index("RETR")
+    assert "MDTM" not in fake.log[fake.log.index("RETR") :]
+
+
+def test_download_manifest_keeps_mdtm_read_before_retr(tmp_path: Path):
+    """O arquivo muda entre o MDTM e o RETR: o manifesto fica com a data velha."""
+
+    class ChangingFTP(ProbeFTP):
+        def retrbinary(self, cmd, cb, blocksize=8192, rest=None):
+            self._mdtm = "213 20240601000000"  # servidor atualiza durante o RETR
+            return super().retrbinary(cmd, cb, blocksize, rest)
+
+    target = tmp_path / "x.dbc"
+    _fetch(_client(ChangingFTP()), target)
+    manifest = DownloadManifest.read_json(Path(str(target) + ".manifest.json"))
+    assert manifest.source_meta is not None
+    assert manifest.source_meta.last_modified == "2024-01-01T12:00:00+00:00"
+
+
+def test_listing_values_skip_without_any_connection(tmp_path: Path):
+    target = _sidecar_only(tmp_path)
+    fake = ProbeFTP()
+    _fetch(
+        _client(fake),
+        target,
+        remote_size=10,
+        remote_modified=dt.datetime(2024, 1, 1, 12, tzinfo=dt.UTC),
+    )
+    assert fake.opens == 0
+    assert fake.retr_calls == 0
+    assert not target.exists()
+
+
+def test_listing_values_in_other_timezone_compare_as_instants(tmp_path: Path):
+    target = _sidecar_only(tmp_path)
+    fake = ProbeFTP()
+    tz = dt.timezone(dt.timedelta(hours=-3))
+    _fetch(
+        _client(fake),
+        target,
+        remote_size=10,
+        remote_modified=dt.datetime(2024, 1, 1, 9, tzinfo=tz),
+    )
+    assert fake.opens == 0
+
+
+@pytest.mark.parametrize(
+    ("size", "modified"),
+    [
+        (11, dt.datetime(2024, 1, 1, 12, tzinfo=dt.UTC)),  # tamanho diferente
+        (10, dt.datetime(2024, 1, 2, tzinfo=dt.UTC)),  # mais nova
+        (10, dt.datetime(2023, 12, 31, tzinfo=dt.UTC)),  # diferente (mais velha)
+        (10, None),  # só o tamanho: data desconhecida
+        (None, dt.datetime(2024, 1, 1, 12, tzinfo=dt.UTC)),  # só a data
+    ],
+)
+def test_listing_values_mismatch_downloads(tmp_path: Path, size, modified):
+    target = _sidecar_only(tmp_path)
+    fake = ProbeFTP(size=10)
+    _fetch(_client(fake), target, remote_size=size, remote_modified=modified)
+    assert fake.retr_calls == 1
+    assert "TYPE I" not in fake.log  # sem sondagem: a única conexão é a do download
+
+
+def test_listing_values_with_force_download(tmp_path: Path):
+    target = _sidecar_only(tmp_path)
+    fake = ProbeFTP()
+    _fetch(
+        _client(fake),
+        target,
+        force=True,
+        remote_size=10,
+        remote_modified=dt.datetime(2024, 1, 1, 12, tzinfo=dt.UTC),
+    )
+    assert fake.retr_calls == 1
 
 
 def test_present_file_keeps_mdtm_check(tmp_path: Path):

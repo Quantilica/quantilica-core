@@ -25,8 +25,8 @@ from .logging import get_logger, log_step
 from .manifests import (
     DownloadManifest,
     SourceMetadata,
-    manifest_matches_remote,
     manifest_sidecar_path,
+    parse_remote_datetime,
     write_manifest_sidecar,
 )
 from .retry import exponential_delay, retry_call
@@ -309,6 +309,55 @@ def _parse_mdtm(reply: str) -> dt.datetime | None:
         return None
 
 
+# Margem aplicada ao ``fetched_at`` quando o manifesto não guardou o ``MDTM``
+# (manifestos antigos): um servidor cujo ``MDTM`` vem em hora local pode
+# mostrar uma troca recente "mais velha" que o instante do download. Dentro
+# desta janela o arquivo é baixado de novo (custo: uma rebaixa por arquivo).
+FETCHED_AT_MARGIN = dt.timedelta(days=1)
+
+
+def _ftp_manifest_matches(
+    manifest: DownloadManifest,
+    *,
+    remote_size: int | None,
+    remote_modified: dt.datetime | None,
+) -> bool:
+    """Retenção só do sidecar no FTP: o remoto é o mesmo que o manifesto descreve?
+
+    Mais estrita que a regra do HTTP (``manifest_matches_remote``), porque o
+    ``MDTM`` é a única prova de versão (não há ``ETag``). Conservadora: o que
+    faltar responde ``False`` (o chamador baixa).
+
+    - O tamanho remoto tem de ser conhecido e igual a ``size_bytes``.
+    - A data remota tem de ser conhecida.
+    - Se o manifesto traz o ``MDTM`` gravado pelo próprio FTP
+      (``source_meta.last_modified``), a data tem de ser **igual** (``!=``
+      baixa, também a mais velha: cópia que preserva o ``mtime`` antigo com
+      conteúdo novo). A comparação é em segundos.
+    - Se só há ``fetched_at`` (manifestos antigos), a data remota tem de ser
+      não mais nova que ``fetched_at`` menos ``FETCHED_AT_MARGIN``.
+    """
+    if remote_size is None or remote_size != manifest.size_bytes:
+        return False
+    if remote_modified is None:
+        return False
+    if remote_modified.tzinfo is None:
+        remote_modified = remote_modified.replace(tzinfo=dt.UTC)
+    remote_modified = remote_modified.replace(microsecond=0)
+    source_meta = manifest.source_meta
+    recorded = (
+        parse_remote_datetime(source_meta.last_modified)
+        if source_meta is not None and source_meta.last_modified
+        else None
+    )
+    if recorded is not None:
+        return remote_modified == recorded.replace(microsecond=0)
+    fetched_at = parse_remote_datetime(manifest.fetched_at)
+    if fetched_at is None:
+        return False
+    return remote_modified <= fetched_at - FETCHED_AT_MARGIN
+
+
 class FtpClient:
     """Small FTP client wrapper around ``ftplib``."""
 
@@ -383,18 +432,25 @@ class FtpClient:
                 with contextlib.suppress(Exception):
                     ftp.close()
 
-    def _sidecar_is_current(self, url: str, target: Path) -> bool:
+    def _sidecar_is_current(
+        self,
+        url: str,
+        target: Path,
+        *,
+        remote_size: int | None = None,
+        remote_modified: dt.datetime | None = None,
+    ) -> bool:
         """Sidecar-only retention: judge freshness without the raw file.
 
         Used when ``target`` is absent but ``<target>.manifest.json`` is
-        present and readable. Asks the server for ``SIZE`` and ``MDTM`` and
-        applies :func:`quantilica.core.manifests.manifest_matches_remote`, the
-        same rule as the HTTP client with ``check_size=True``: the remote date
-        must be known and not newer than the recorded one
-        (``source_meta.last_modified``, else ``fetched_at``) and the remote
-        size must equal ``size_bytes``. Conservative: a missing/corrupt
-        sidecar, a server without ``SIZE`` or ``MDTM``, or any error answers
-        ``False`` and the caller downloads.
+        present and readable. Applies :func:`_ftp_manifest_matches` (see it for
+        the per-field criteria). When the caller already knows the remote
+        ``remote_size`` / ``remote_modified`` (e.g. from the directory
+        listing) they are used as given and **no connection is opened**; a
+        missing one counts as unknown (download). Otherwise one connection
+        asks the server for ``SIZE`` (after ``TYPE I``) and ``MDTM``.
+        Conservative: a missing/corrupt sidecar, a server without ``SIZE`` or
+        ``MDTM``, or any error answers ``False`` and the caller downloads.
         """
         sidecar = manifest_sidecar_path(target)
         try:
@@ -403,18 +459,17 @@ class FtpClient:
             manifest = DownloadManifest.read_json(sidecar)
         except (AttributeError, OSError, TypeError, ValueError):
             return False
-        try:
-            with self._connected() as ftp:
-                size = ftp.size(url)
-                remote_size = int(size) if size is not None else None
-                remote_modified = _parse_mdtm(ftp.sendcmd(f"MDTM {url}"))
-        except Exception:
-            return False
-        return manifest_matches_remote(
-            manifest,
-            remote_size=remote_size,
-            remote_modified=remote_modified,
-            check_size=True,
+        if remote_size is None and remote_modified is None:
+            try:
+                with self._connected() as ftp:
+                    ftp.voidcmd("TYPE I")  # SIZE em ASCII pode divergir/recusar
+                    size = ftp.size(url)
+                    remote_size = int(size) if size is not None else None
+                    remote_modified = _parse_mdtm(ftp.sendcmd(f"MDTM {url}"))
+            except Exception:
+                return False
+        return _ftp_manifest_matches(
+            manifest, remote_size=remote_size, remote_modified=remote_modified
         )
 
     def download_with_manifest(
@@ -428,6 +483,8 @@ class FtpClient:
         force: bool = False,
         metadata: dict[str, Any] | None = None,
         progress: ProgressCallback | None = None,
+        remote_size: int | None = None,
+        remote_modified: dt.datetime | None = None,
     ) -> Path:
         """Download a file from FTP; freshness check, streaming write, and manifest.
 
@@ -441,6 +498,14 @@ class FtpClient:
         metadata: Additional metadata.
         progress: Progress callback function `(downloaded, total)` — mesmo
             contrato de `ProgressCallback` do HTTP (`total=0` se desconhecido).
+        remote_size, remote_modified: tamanho e data que o chamador já tem da
+            listagem. Quando vierem (um dos dois basta para ligar o modo), a
+            retenção só do sidecar os compara com o manifesto **sem abrir
+            conexão de sondagem**; o que faltar conta como desconhecido
+            (baixa). `remote_modified` deve estar em **UTC** (datetime
+            aware; naive é tomado como UTC): quem tem a data do `LIST` do
+            IIS, que vem em hora local, precisa convertê-la antes. Só afeta
+            o caso arquivo ausente + manifesto presente.
 
         Returns:
             Path: The path to the downloaded file.
@@ -461,7 +526,9 @@ class FtpClient:
                         if target.stat().st_mtime >= (remote_mtime - 1):
                             self.logger.debug("File is up to date: %s", target.name)
                             return target
-            elif not force and self._sidecar_is_current(url, target):
+            elif not force and self._sidecar_is_current(
+                url, target, remote_size=remote_size, remote_modified=remote_modified
+            ):
                 # Sidecar-only retention: the raw file is gone, the sidecar
                 # attests the remote is unchanged. Nothing is (re)created.
                 self.logger.debug(
@@ -473,6 +540,12 @@ class FtpClient:
 
             def _attempt() -> None:
                 with self._connected() as ftp:
+                    # MDTM antes do RETR: se o arquivo mudar no meio, o manifesto
+                    # fica com a data velha e o conteúdo novo (rebaixa na
+                    # próxima), nunca a data nova com o conteúdo velho.
+                    outcome.pop("mtime_str", None)
+                    with contextlib.suppress(Exception):
+                        outcome["mtime_str"] = ftp.sendcmd(f"MDTM {url}").split()[1]
                     try:
                         # Total best-effort (SIZE pode não existir no servidor).
                         total = 0
@@ -498,8 +571,6 @@ class FtpClient:
                     except ftplib.error_perm as exc:
                         raise FetchError(f"FTP file not found: {url}") from exc
                     outcome.update(sha256=sha256, size_bytes=size_bytes)
-                    with contextlib.suppress(Exception):
-                        outcome["mtime_str"] = ftp.sendcmd(f"MDTM {url}").split()[1]
 
             self._retry(_attempt)
 
