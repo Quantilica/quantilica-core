@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime as dt
+import email.utils
 import json
 import logging
 import os
@@ -330,6 +332,83 @@ class DownloadManifest:
 
 MANIFEST_SIDECAR_SUFFIX = ".manifest.json"
 """Suffix appended to a target path to build its manifest sidecar name."""
+
+
+def parse_remote_datetime(value: str | None) -> dt.datetime | None:
+    """Parse an RFC 1123 or ISO-8601 date string into an aware datetime.
+
+    Returns ``None`` for empty or unparseable input. A naive result is
+    taken as UTC.
+    """
+    if not value:
+        return None
+    try:
+        parsed = email.utils.parsedate_to_datetime(value)
+    except (ValueError, TypeError):
+        parsed = None
+    if parsed is None:
+        try:
+            parsed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.UTC)
+    return parsed
+
+
+def manifest_matches_remote(
+    manifest: DownloadManifest,
+    *,
+    remote_size: int | None,
+    remote_modified: dt.datetime | None,
+    remote_etag: str | None = None,
+    check_size: bool = True,
+) -> bool:
+    """Tell whether the remote resource is unchanged since ``manifest`` was written.
+
+    Protocol-agnostic freshness rule used when the raw file is gone and only
+    its ``<file>.manifest.json`` sidecar survives (sidecar-only retention).
+    Shared by the HTTP and FTP clients so both agree. Conservative: any
+    missing piece of evidence answers ``False`` (the caller downloads).
+
+    - A remote ``ETag`` equal to the recorded one is a strong match.
+    - Otherwise the remote modification date is required, and it must not be
+      newer than the recorded one (``source_meta.last_modified``, falling
+      back to ``fetched_at`` for manifests that did not record it). With
+      ``check_size`` the remote size must also be known and equal to
+      ``size_bytes``.
+
+    Args:
+        manifest: The surviving sidecar manifest.
+        remote_size: Size advertised by the remote, or ``None`` if unknown.
+        remote_modified: Remote modification instant (aware), or ``None``.
+        remote_etag: Remote ``ETag``, when the protocol has one.
+        check_size: Whether the size must match (``remote_size`` known).
+    """
+    source_meta = manifest.source_meta
+
+    if (
+        remote_etag
+        and source_meta is not None
+        and source_meta.etag
+        and remote_etag == source_meta.etag
+    ):
+        return True
+
+    if remote_modified is None:
+        return False
+    local_lm: dt.datetime | None = None
+    if source_meta is not None and source_meta.last_modified:
+        local_lm = parse_remote_datetime(source_meta.last_modified)
+    if local_lm is None and manifest.fetched_at:
+        local_lm = parse_remote_datetime(manifest.fetched_at)
+    if local_lm is None:
+        return False
+    if remote_modified > local_lm:
+        return False
+    if check_size:
+        return remote_size is not None and remote_size == manifest.size_bytes
+    return True
 
 
 def manifest_sidecar_path(target: str | Path) -> Path:

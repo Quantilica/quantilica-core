@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import datetime as dt
 import ftplib
+import json
 from pathlib import Path
 
 import pytest
 
 from quantilica.core.ftp import FtpClient, parse_ftp_list_line
+from quantilica.core.manifests import DownloadManifest
 
 
 class FakeFTP:
@@ -116,6 +118,184 @@ def test_body_exception_propagates_not_masked(tmp_path: Path):
     fake = FakeFTP(retr_error=OSError("connection reset"))
     with pytest.raises(StorageError, match="Could not write stream"):
         _download(_client(fake), tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Retenção só do sidecar (arquivo apagado, manifesto sobrevive)
+# ---------------------------------------------------------------------------
+
+
+class ProbeFTP(FakeFTP):
+    """FakeFTP cujo SIZE/MDTM são configuráveis e que conta os RETR."""
+
+    def __init__(
+        self,
+        *,
+        size: int | Exception | None = 10,
+        mdtm: str | Exception = "213 20240101120000",
+        chunks: list[bytes] | None = None,
+    ) -> None:
+        super().__init__(chunks=chunks, size=size)  # type: ignore[arg-type]
+        self._mdtm = mdtm
+        self.retr_calls = 0
+
+    def retrbinary(self, cmd: str, cb, blocksize: int = 8192, rest=None) -> str:
+        self.retr_calls += 1
+        return super().retrbinary(cmd, cb, blocksize, rest)
+
+    def sendcmd(self, cmd: str) -> str:
+        if isinstance(self._mdtm, Exception):
+            raise self._mdtm
+        return self._mdtm
+
+
+def _fetch(client: FtpClient, target: Path, *, force: bool = False) -> Path:
+    return client.download_with_manifest(
+        "pub/x.dbc",
+        target,
+        source_id="datasus",
+        dataset_id="sih-rd",
+        producer="test",
+        force=force,
+    )
+
+
+def _sidecar_only(tmp_path: Path, *, mdtm: str = "213 20240101120000") -> Path:
+    """Baixa, apaga o arquivo e deixa só o manifesto lateral."""
+    target = tmp_path / "x.dbc"
+    _fetch(_client(ProbeFTP(mdtm=mdtm)), target)
+    target.unlink()
+    assert Path(str(target) + ".manifest.json").is_file()
+    return target
+
+
+def test_download_records_remote_mdtm_in_manifest(tmp_path: Path):
+    target = _sidecar_only(tmp_path)
+    manifest = DownloadManifest.read_json(Path(str(target) + ".manifest.json"))
+    assert manifest.source_meta is not None
+    assert manifest.source_meta.last_modified == "2024-01-01T12:00:00+00:00"
+    assert manifest.size_bytes == 10
+
+
+def test_sidecar_only_same_size_and_date_skips(tmp_path: Path):
+    target = _sidecar_only(tmp_path)
+    fake = ProbeFTP(size=10)
+    assert _fetch(_client(fake), target) == target
+    assert fake.retr_calls == 0
+    assert not target.exists()  # sidecar-only: o arquivo não é recriado
+
+
+def test_sidecar_only_older_remote_date_skips(tmp_path: Path):
+    target = _sidecar_only(tmp_path)
+    fake = ProbeFTP(size=10, mdtm="213 20231231000000")
+    _fetch(_client(fake), target)
+    assert fake.retr_calls == 0
+
+
+def test_sidecar_only_different_size_downloads(tmp_path: Path):
+    target = _sidecar_only(tmp_path)
+    fake = ProbeFTP(size=11, chunks=[b"hello", b"world", b"!"])
+    _fetch(_client(fake), target)
+    assert fake.retr_calls == 1
+    assert target.read_bytes() == b"helloworld!"
+
+
+def test_sidecar_only_newer_remote_date_downloads(tmp_path: Path):
+    target = _sidecar_only(tmp_path)
+    fake = ProbeFTP(size=10, mdtm="213 20240102000000")
+    _fetch(_client(fake), target)
+    assert fake.retr_calls == 1
+    assert target.exists()
+
+
+def test_sidecar_only_unreadable_manifest_downloads(tmp_path: Path):
+    target = _sidecar_only(tmp_path)
+    Path(str(target) + ".manifest.json").write_text("[1, 2]", encoding="utf-8")
+    fake = ProbeFTP(size=10)
+    _fetch(_client(fake), target)
+    assert fake.retr_calls == 1
+
+
+def test_sidecar_only_garbage_manifest_downloads(tmp_path: Path):
+    target = _sidecar_only(tmp_path)
+    Path(str(target) + ".manifest.json").write_text("{nao e json", encoding="utf-8")
+    fake = ProbeFTP(size=10)
+    _fetch(_client(fake), target)
+    assert fake.retr_calls == 1
+
+
+def test_sidecar_only_without_sidecar_downloads(tmp_path: Path):
+    target = tmp_path / "x.dbc"
+    fake = ProbeFTP(size=10)
+    _fetch(_client(fake), target)
+    assert fake.retr_calls == 1
+
+
+def test_sidecar_only_force_downloads(tmp_path: Path):
+    target = _sidecar_only(tmp_path)
+    fake = ProbeFTP(size=10)
+    _fetch(_client(fake), target, force=True)
+    assert fake.retr_calls == 1
+    assert target.exists()
+
+
+def test_sidecar_only_server_without_size_downloads(tmp_path: Path):
+    target = _sidecar_only(tmp_path)
+    fake = ProbeFTP(size=ftplib.error_perm("500 SIZE not supported"))
+    _fetch(_client(fake), target)
+    assert fake.retr_calls == 1
+
+
+def test_sidecar_only_server_without_mdtm_downloads(tmp_path: Path):
+    """Sem data o HTTP também baixa (sem Last-Modified): mesma conservadorice."""
+    target = _sidecar_only(tmp_path)
+    fake = ProbeFTP(size=10, mdtm=ftplib.error_perm("500 MDTM not supported"))
+    _fetch(_client(fake), target)
+    assert fake.retr_calls == 1
+
+
+def test_sidecar_only_malformed_mdtm_downloads(tmp_path: Path):
+    target = _sidecar_only(tmp_path)
+    fake = ProbeFTP(size=10, mdtm="213 not-a-date")
+    _fetch(_client(fake), target)
+    assert fake.retr_calls == 1
+
+
+def test_sidecar_only_legacy_manifest_uses_fetched_at(tmp_path: Path):
+    """Manifestos antigos (sem source_meta) comparam a data com ``fetched_at``."""
+    target = _sidecar_only(tmp_path)
+    sidecar = Path(str(target) + ".manifest.json")
+    data = json.loads(sidecar.read_text(encoding="utf-8"))
+    data.pop("source_meta", None)
+    data["fetched_at"] = "2026-11-01T00:00:00+00:00"
+    sidecar.write_text(json.dumps(data), encoding="utf-8")
+
+    fake = ProbeFTP(size=10, mdtm="213 20260101000000")  # antes do fetched_at
+    _fetch(_client(fake), target)
+    assert fake.retr_calls == 0
+
+    fake = ProbeFTP(size=10, mdtm="213 20261201000000")  # depois do fetched_at
+    _fetch(_client(fake), target)
+    assert fake.retr_calls == 1
+
+
+def test_sidecar_only_mdtm_with_fraction_is_parsed(tmp_path: Path):
+    target = _sidecar_only(tmp_path)
+    fake = ProbeFTP(size=10, mdtm="213 20240101120000.250")
+    _fetch(_client(fake), target)
+    assert fake.retr_calls == 0
+
+
+def test_present_file_keeps_mdtm_check(tmp_path: Path):
+    """Arquivo presente: comportamento de antes (compara mtime local com MDTM)."""
+    target = tmp_path / "x.dbc"
+    _fetch(_client(ProbeFTP()), target)
+    fake = ProbeFTP(mdtm="213 20200101000000")  # remoto bem mais velho
+    _fetch(_client(fake), target)
+    assert fake.retr_calls == 0
+    fake = ProbeFTP(mdtm="213 20990101000000")  # remoto no futuro
+    _fetch(_client(fake), target)
+    assert fake.retr_calls == 1
 
 
 # ---------------------------------------------------------------------------

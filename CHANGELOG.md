@@ -9,6 +9,9 @@ e este projeto adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ### Adicionado
 
+- `FtpClient.download_with_manifest` ganha a retenção só do sidecar, no mesmo modo do cliente HTTP: com o arquivo ausente e o `<arquivo>.manifest.json` presente e legível, consulta o servidor (`SIZE` e `MDTM`, numa só conexão, sem baixar) e dá o arquivo por em dia quando o tamanho é igual ao `size_bytes` do manifesto e o `MDTM` (UTC) não é mais novo que o gravado (`source_meta.last_modified`, ou `fetched_at` nos manifestos antigos, que não o tinham). O arquivo não é recriado. Conservador como o HTTP: manifesto ausente, ilegível ou que não seja um objeto JSON, servidor sem `SIZE` ou sem `MDTM`, resposta malformada, erro de conexão ou data mais nova baixam. `force=True` continua baixando sempre; com o arquivo presente nada muda (compara o `mtime` local com o `MDTM`). Antes, um espelho só de manifestos baixava tudo de novo a cada `sync`.
+- `FtpClient.download_with_manifest` passa a gravar o `MDTM` remoto em `source_meta.last_modified` (ISO 8601, UTC) do manifesto, quando o servidor o informa.
+- `quantilica.core.manifests.manifest_matches_remote(manifest, *, remote_size, remote_modified, remote_etag=None, check_size=True)` e `parse_remote_datetime(value)`: a regra de frescor da retenção só do sidecar, agora única para HTTP e FTP. ETag igual vale por si só; senão exige data remota conhecida e não mais nova que a gravada e, com `check_size`, tamanho remoto conhecido e igual. O comportamento do cliente HTTP não muda.
 - `parse_ftp_list_line(line, *, now=None)`: relógio injetável para resolver o ano das linhas `ls -l` que trazem hora em vez de ano. Sem `now` o comportamento é o de antes (relógio local).
 
 ### Corrigido

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import datetime as dt
 import ftplib
 import logging
@@ -21,7 +22,13 @@ if TYPE_CHECKING:  # evita ciclo pesado (http importa httpx2)
 from .exceptions import CorruptPayloadError, FetchError
 from .files import check_payload, ensure_parent, write_stream_atomic
 from .logging import get_logger, log_step
-from .manifests import DownloadManifest, write_manifest_sidecar
+from .manifests import (
+    DownloadManifest,
+    SourceMetadata,
+    manifest_matches_remote,
+    manifest_sidecar_path,
+    write_manifest_sidecar,
+)
 from .retry import exponential_delay, retry_call
 
 _logger = get_logger(__name__)
@@ -285,6 +292,23 @@ class MonitoredFTP(ftplib.FTP):
         return self.voidresp()
 
 
+def _parse_mdtm(reply: str) -> dt.datetime | None:
+    """Parse an ``MDTM`` reply (``213 YYYYMMDDHHMMSS[.fff]``) into UTC.
+
+    RFC 3659 defines ``MDTM`` in UTC. Returns ``None`` for anything that is
+    not a well-formed reply (the caller then treats the date as unknown).
+    """
+    parts = reply.split()
+    if len(parts) < 2:
+        return None
+    try:
+        return dt.datetime.strptime(parts[1].split(".")[0], "%Y%m%d%H%M%S").replace(
+            tzinfo=dt.UTC
+        )
+    except ValueError:
+        return None
+
+
 class FtpClient:
     """Small FTP client wrapper around ``ftplib``."""
 
@@ -359,6 +383,40 @@ class FtpClient:
                 with contextlib.suppress(Exception):
                     ftp.close()
 
+    def _sidecar_is_current(self, url: str, target: Path) -> bool:
+        """Sidecar-only retention: judge freshness without the raw file.
+
+        Used when ``target`` is absent but ``<target>.manifest.json`` is
+        present and readable. Asks the server for ``SIZE`` and ``MDTM`` and
+        applies :func:`quantilica.core.manifests.manifest_matches_remote`, the
+        same rule as the HTTP client with ``check_size=True``: the remote date
+        must be known and not newer than the recorded one
+        (``source_meta.last_modified``, else ``fetched_at``) and the remote
+        size must equal ``size_bytes``. Conservative: a missing/corrupt
+        sidecar, a server without ``SIZE`` or ``MDTM``, or any error answers
+        ``False`` and the caller downloads.
+        """
+        sidecar = manifest_sidecar_path(target)
+        try:
+            if not sidecar.exists():
+                return False
+            manifest = DownloadManifest.read_json(sidecar)
+        except (AttributeError, OSError, TypeError, ValueError):
+            return False
+        try:
+            with self._connected() as ftp:
+                size = ftp.size(url)
+                remote_size = int(size) if size is not None else None
+                remote_modified = _parse_mdtm(ftp.sendcmd(f"MDTM {url}"))
+        except Exception:
+            return False
+        return manifest_matches_remote(
+            manifest,
+            remote_size=remote_size,
+            remote_modified=remote_modified,
+            check_size=True,
+        )
+
     def download_with_manifest(
         self,
         url: str,
@@ -403,6 +461,13 @@ class FtpClient:
                         if target.stat().st_mtime >= (remote_mtime - 1):
                             self.logger.debug("File is up to date: %s", target.name)
                             return target
+            elif not force and self._sidecar_is_current(url, target):
+                # Sidecar-only retention: the raw file is gone, the sidecar
+                # attests the remote is unchanged. Nothing is (re)created.
+                self.logger.debug(
+                    "File (ephemeral) is up to date via manifest: %s", target.name
+                )
+                return target
 
             outcome: dict[str, Any] = {}
 
@@ -453,6 +518,13 @@ class FtpClient:
                 producer=producer,
                 metadata=metadata or {},
             )
+            if remote_modified := _parse_mdtm(f"213 {outcome.get('mtime_str', '')}"):
+                manifest = dataclasses.replace(
+                    manifest,
+                    source_meta=SourceMetadata(
+                        last_modified=remote_modified.isoformat()
+                    ),
+                )
             write_manifest_sidecar(target, manifest)
             return target
 

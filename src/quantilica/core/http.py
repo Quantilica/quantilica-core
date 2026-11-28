@@ -38,7 +38,9 @@ from .logging import bind_context, get_logger, log_step
 from .manifests import (
     DownloadManifest,
     SourceMetadata,
+    manifest_matches_remote,
     manifest_sidecar_path,
+    parse_remote_datetime,
     write_manifest_sidecar,
 )
 from .ratelimit import HostGuard, looks_like_maintenance_html
@@ -2597,20 +2599,7 @@ def _write_manifest(
 
 def _parse_http_datetime(value: str | None) -> dt.datetime | None:
     """Parse an RFC 1123/ISO-8601 date string into an aware datetime."""
-    if not value:
-        return None
-    try:
-        parsed = email.utils.parsedate_to_datetime(value)
-    except (ValueError, TypeError):
-        parsed = None
-    if parsed is None:
-        try:
-            parsed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        except ValueError:
-            return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=dt.UTC)
-    return parsed
+    return parse_remote_datetime(value)
 
 
 def _is_up_to_date_via_manifest(
@@ -2624,42 +2613,22 @@ def _is_up_to_date_via_manifest(
     Used when the raw file was deleted (ephemeral retention) but its
     ``<file>.manifest.json`` sidecar survives. A match on either remote
     ``ETag`` or (size + Last-Modified) means the remote content is
-    unchanged since the manifest was written.
+    unchanged since the manifest was written. The rule itself lives in
+    :func:`quantilica.core.manifests.manifest_matches_remote`, shared with
+    the FTP client.
     """
-    source_meta = manifest.source_meta
-
-    # (a) Strong signal: matching ETag means remote content is identical.
-    remote_etag = response.headers.get("ETag")
-    if (
-        remote_etag
-        and source_meta is not None
-        and source_meta.etag
-        and remote_etag == source_meta.etag
-    ):
-        return True
-
-    # (b) Weaker signal: same advertised size and Last-Modified not newer
-    # than what we recorded at fetch time.
     content_length = response.headers.get("Content-Length")
     remote_size: int | None = None
     if content_length:
         with contextlib.suppress(ValueError, TypeError):
             remote_size = int(content_length)
-    remote_lm = _parse_http_datetime(response.headers.get("Last-Modified"))
-    if remote_lm is None:
-        return False
-    local_lm: dt.datetime | None = None
-    if source_meta is not None and source_meta.last_modified:
-        local_lm = _parse_http_datetime(source_meta.last_modified)
-    if local_lm is None and manifest.fetched_at:
-        local_lm = _parse_http_datetime(manifest.fetched_at)
-    if local_lm is None:
-        return False
-    if remote_lm > local_lm:
-        return False
-    if check_size:
-        return remote_size is not None and remote_size == manifest.size_bytes
-    return True
+    return manifest_matches_remote(
+        manifest,
+        remote_size=remote_size,
+        remote_modified=_parse_http_datetime(response.headers.get("Last-Modified")),
+        remote_etag=response.headers.get("ETag"),
+        check_size=check_size,
+    )
 
 
 def _head_fresh(

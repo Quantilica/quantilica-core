@@ -445,3 +445,39 @@ def test_trusted_sha256_matches_manifest_written_by_core(tmp_path, reads):
     reads.clear()  # from_file hashed the file to build the manifest
     assert trusted_sha256(target) == sha256_bytes(b"payload")
     assert reads == []
+
+
+def test_manifest_matches_remote_rule():
+    """Regra compartilhada por HTTP e FTP (retenção só do sidecar)."""
+    import datetime as dt
+
+    from quantilica.core.manifests import (
+        DownloadManifest,
+        SourceMetadata,
+        manifest_matches_remote,
+    )
+
+    manifest = DownloadManifest.from_content(
+        source_id="s", dataset_id="d", url="u", content=b"0123456789"
+    )
+    manifest = replace(
+        manifest,
+        source_meta=SourceMetadata(
+            etag='"abc"', last_modified="2024-01-01T12:00:00+00:00"
+        ),
+    )
+    same = dt.datetime(2024, 1, 1, 12, tzinfo=dt.UTC)
+    later = dt.datetime(2024, 1, 2, tzinfo=dt.UTC)
+    # ETag igual vale por si só
+    assert manifest_matches_remote(
+        manifest, remote_size=None, remote_modified=None, remote_etag='"abc"'
+    )
+    # sem data remota: baixa
+    assert not manifest_matches_remote(manifest, remote_size=10, remote_modified=None)
+    assert manifest_matches_remote(manifest, remote_size=10, remote_modified=same)
+    assert not manifest_matches_remote(manifest, remote_size=10, remote_modified=later)
+    assert not manifest_matches_remote(manifest, remote_size=11, remote_modified=same)
+    assert not manifest_matches_remote(manifest, remote_size=None, remote_modified=same)
+    assert manifest_matches_remote(
+        manifest, remote_size=None, remote_modified=same, check_size=False
+    )
